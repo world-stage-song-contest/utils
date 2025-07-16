@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+from collections import defaultdict
 from dataclasses import dataclass
 import re
 import sys
@@ -39,93 +40,112 @@ def youtube_id(url: str) -> str:
 
 def download_video(url: str, name: str, out_dir: Path, browser: str | None, po_token: str | None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / name
+    if out_path.exists():
+        common.write(f"[dl] {name} already exists, skipping download.")
+        return out_path
 
     # --- YouTube -------------------------------------------------------------
     if "youtu" in url:
         vid = youtube_id(url)
-        out_path = out_dir / name
-        if not out_path.exists():
-            print(f"[dl] YT {vid}")
-            yt_dlp_args = [
-                "yt-dlp", "-f", "bv*+ba/b"
-            ]
+        common.write(f"[dl] YT {vid}")
+        yt_dlp_args = [
+            "yt-dlp", "-f", "bv*+ba/b"
+        ]
 
-            if po_token:
-                yt_dlp_args.append("--extractor-args")
-                yt_dlp_args.append("youtube:player-client=default,mweb;po_token={po_token}")
+        if po_token:
+            yt_dlp_args.append("--extractor-args")
+            yt_dlp_args.append("youtube:player-client=default,mweb;po_token={po_token}")
 
-            if browser:
-                yt_dlp_args.append("--cookies-from-browser")
-                yt_dlp_args.append(browser)
+        if browser:
+            yt_dlp_args.append("--cookies-from-browser")
+            yt_dlp_args.append(browser)
 
-            yt_dlp_args.append("--merge-output-format")
-            yt_dlp_args.append("mp4")
+        yt_dlp_args.append("--merge-output-format")
+        yt_dlp_args.append("mp4")
 
-            yt_dlp_args.append("-o")
-            yt_dlp_args.append(str(out_path))
+        yt_dlp_args.append("-o")
+        yt_dlp_args.append(str(out_path))
 
-            yt_dlp_args.append(url)
+        yt_dlp_args.append(url)
 
-            common.run(yt_dlp_args)
+        common.run(yt_dlp_args)
         return out_path
 
     # --- Google Drive --------------------------------------------------------
     m = _GDRIVE_RE.search(url)
     if m:
         fid = m.group(1)
-        out_path = out_dir / name
-        if not out_path.exists():
-            print(f"[dl] GDrive {fid}")
-            common.run(["gdown", "--id", fid, "-O", str(out_path)])
+        common.write(f"[dl] GDrive {fid}")
+        common.run(["gdown", "--id", fid, "-O", str(out_path)])
         return out_path
 
     # --- Direct link ---------------------------------------------------------
     filename = url.split("?")[0].rsplit("/", 1)[-1]
-    out_path = out_dir / name
-    if not out_path.exists():
-        print(f"[dl] {filename}")
-        common.run(["curl", "-L", "-o", str(out_path), url])
+    common.write(f"[dl] {filename}")
+    common.run(["curl", "-L", "-o", str(out_path), url])
     return out_path
+
+def link_existing_clip(existing: Path, new: str) -> None:
+    if not existing.exists():
+        raise FileNotFoundError(f"Existing clip {existing} does not exist.")
+    new_path = existing.parent / new
+    if new_path.exists(follow_symlinks=False):
+        common.write(f"[dl] {new} already exists, skipping link creation.")
+        return
+    common.write(f"[dl] Linking {existing} to {new}")
+    new_path.symlink_to(existing.name, target_is_directory=False)
+
+def create_filename(row: Data) -> str:
+    return f"{row.year}_{row.show}_{row.ro:02d}_{row.country}.mp4"
+
+def download_many(data: list[Data], out_dir: Path, browser: str | None, po_token: str | None) -> None:
+    this = data[0]
+    name = create_filename(this)
+    master = download_video(this.video_link, name, out_dir, browser, po_token)
+    for row in data[1:]:
+        new_name = create_filename(row)
+        link_existing_clip(master, new_name)
 
 def main(args: Args) -> None:
     csv_path = Path(args.csv_path)
+    data = defaultdict(list)
+    sz = 0
     with csv_path.open(newline='') as f:
         reader = csv.DictReader(f)
-        data = [
-            Data(
+        for row in reader:
+            sz += 1
+            video_link = row["video_link"].strip()
+            val = Data(
                 ro=int(row["running_order"].strip()),
                 year=int(row["year"].strip()),
                 show=row["show"].strip(),
                 country=row["country"].strip(),
-                video_link=row["video_link"].strip(),
+                video_link=video_link,
             )
-            for row in reader
-        ]
-
-    data.sort(key=lambda x: int(x.ro))
-    sz = len(data)
+            data[video_link].append(val)
 
     args.output.mkdir(parents=True, exist_ok=True)
 
-    print(f"Processing {sz} clips...")
+    common.write(f"[dl] Found {sz} clips in {csv_path}")
     start1 = time.time()
 
     if args.multiprocessing:
         mp.Pool(mp.cpu_count()).starmap(
-            download_video,
-            [(row.video_link, f"{row.year}_{row.show}_{row.ro:02d}_{row.country}.mp4", args.output, args.browser, args.po_token) for row in data]
+            download_many,
+            [(v, args.output, args.browser, args.po_token) for v in data.values()]
         )
     else:
-        for row in data:
-            download_video(row.video_link, f"{row.year}_{row.show}_{row.ro:02d}_{row.country}.mp4", args.output, args.browser, args.po_token)
+        for v in data.values():
+            download_many(v, args.output, args.browser, args.po_token)
 
     end1 = time.time()
 
-    print(f"Processed {sz} clips in {end1 - start1:.2f} seconds")
+    common.write(f"[dl] Processed {sz} clips in {end1 - start1:.2f} seconds")
 
 if __name__ == "__main__":
     if shutil.which("yt-dlp") is None:
-        print("Error: yt-dlp is not installed.", file=sys.stderr)
+        common.error("Error: yt-dlp is not installed.", file=sys.stderr)
         sys.exit(1)
 
     ap = argparse.ArgumentParser(
@@ -152,6 +172,6 @@ if __name__ == "__main__":
         start = time.time()
         main(ar)
         end = time.time()
-        print(f"Total time: {end - start:.2f} seconds")
+        common.write(f"Total time: {end - start:.2f} seconds")
     except KeyboardInterrupt:
         sys.exit(130)

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import os
 from pathlib import Path
 from dataclasses import dataclass
 import argparse
+import time
 
 import cards
 import download
@@ -31,6 +33,7 @@ def cleanup(tmp: Path) -> None:
             (root / name).rmdir()
 
 def exec(args: Args) -> None:
+    start = time.time()
     # Download videos
     if "download" in args.stages:
         download.main(download.Args(
@@ -69,6 +72,9 @@ def exec(args: Args) -> None:
     if args.cleanup:
         cleanup(args.tmpdir)
 
+    end = time.time()
+    print(f"Total processing time: {end - start:.2f} seconds")
+
 def setup_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Process recap videos.")
 
@@ -80,7 +86,7 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--size", default="1920x1080", type=common.parse_size, help="Output video size WxH")
     parser.add_argument("--fps", type=int, default=60, help="Output video FPS")
     parser.add_argument("--fade-duration", type=float, default=0.25, help="Fade duration in seconds")
-    parser.add_argument("--output", default="recap.mp4", help="Output video file name")
+    parser.add_argument("--output", default="output", help="Output video file name")
     parser.add_argument("--multiprocessing", action='store_true', help="Use multiprocessing")
     parser.add_argument("--cleanup", action='store_true', help="Cleanup temporary files after processing")
     parser.add_argument("--stage", choices=["download", "cards", "recap"], action='append', default=[],
@@ -89,6 +95,9 @@ def setup_args() -> argparse.ArgumentParser:
     return parser
 
 def main() -> None:
+    if os.name == 'nt' and not common.is_admin():
+        common.elevate_via_uac()
+
     args = setup_args().parse_args()
     exec(Args(
         csv=Path(args.csv),

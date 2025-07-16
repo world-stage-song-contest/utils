@@ -1,6 +1,55 @@
 from dataclasses import dataclass
 import shlex
 import subprocess as sp
+import sys, ctypes
+
+OUT_HANDLE = sys.stdout
+ERR_HANDLE = sys.stderr
+
+def write(*args, **kwargs):
+    print(*args, file=OUT_HANDLE, **kwargs)
+
+def error(*args, **kwargs):
+    print(*args, file=ERR_HANDLE, **kwargs)
+
+def is_admin() -> bool:
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() # type: ignore
+    except Exception:
+        return False
+
+def elevate_via_uac():
+    params = " ".join(f'"{arg}"' for arg in sys.argv[1:])
+    executable = sys.executable
+    script = sys.argv[0]
+
+    # UAC prompt
+    ret = ctypes.windll.shell32.ShellExecuteW( # type: ignore
+        None,
+        "runas",
+        executable,
+        f'"{script}" {params}',
+        None,
+        1
+    )
+
+    if int(ret) <= 32:
+        raise RuntimeError("UAC elevation failed or was cancelled.")
+    else:
+        sys.exit(0)
+
+def parse_size(arg: str) -> tuple[int, int]:
+    w, h = map(int, arg.lower().split("x"))
+    return w, h
+
+def run(cmd: list[str] | str, *, capture: bool = True) -> sp.CompletedProcess:
+    write(shlex.join(cmd))
+    if isinstance(cmd, str):
+        cmd = shlex.split(cmd)
+    try:
+        return sp.run(cmd, stdout=sp.PIPE if capture else None, stderr=sp.PIPE if capture else None, text=True, check=True)
+    except sp.CalledProcessError as e:
+        raise RuntimeError(f"\n[cmd] {' '.join(map(shlex.quote, cmd))}\n[stderr]\n{e.stderr or ''}") from None
 
 @dataclass
 class CS:
@@ -9,19 +58,6 @@ class CS:
     fg1: str
     fg2: str
     text: str
-
-def parse_size(arg: str) -> tuple[int, int]:
-    w, h = map(int, arg.lower().split("x"))
-    return w, h
-
-def run(cmd: list[str] | str, *, capture: bool = True) -> sp.CompletedProcess:
-    print(shlex.join(cmd))
-    if isinstance(cmd, str):
-        cmd = shlex.split(cmd)
-    try:
-        return sp.run(cmd, stdout=sp.PIPE if capture else None, stderr=sp.PIPE if capture else None, text=True, check=True)
-    except sp.CalledProcessError as e:
-        raise RuntimeError(f"\n[cmd] {' '.join(map(shlex.quote, cmd))}\n[stderr]\n{e.stderr or ''}") from None
 
 colours = {
     "70s": {

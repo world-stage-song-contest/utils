@@ -107,7 +107,14 @@ def read_input(path: Path) -> list[V]:
 
 
 def process_entry(v: V, width: int, height: int, style: str, outdir: Path) -> None:
-    print(f"Processing {v.ro:02} {v.country} ({v.year} {v.show})")
+    base_name = f"{v.year}_{v.show}_{v.ro:02}_{v.country}"
+    svg_path = outdir / "svg" / f"{base_name}.svg"
+    svg_path.parent.mkdir(parents=True, exist_ok=True)
+    png_path = outdir / f"{base_name}.png"
+    if png_path.exists():
+        common.write(f"[cards] {png_path} already exists, skipping.")
+        return
+    common.write(f"[cards] Processing {v.ro:02} {v.country} ({v.year} {v.show})")
     d = draw.Drawing(1920, 1080, origin="top-left")
 
     scheme = common.schemes[v.country]
@@ -115,9 +122,6 @@ def process_entry(v: V, width: int, height: int, style: str, outdir: Path) -> No
     make_entry_svg = entry_functions[style]
     make_entry_svg(d, width, height, height // 4, v, scheme)
 
-    base_name = f"{v.year}_{v.show}_{v.ro:02}_{v.country}"
-    svg_path = outdir / "svg" / f"{base_name}.svg"
-    png_path = outdir / f"{base_name}.png"
     d.save_svg(svg_path)
     convert_svg_to_png(svg_path, png_path)
 
@@ -136,7 +140,7 @@ def main(args: Args) -> None:
 
 if __name__ == "__main__":
     if not shutil.which("inkscape"):
-        print("Error: Inkscape is not installed or not found in PATH.", file=sys.stderr)
+        common.error("Error: Inkscape is not installed or not found in PATH.", file=sys.stderr)
         sys.exit(1)
 
     ap = argparse.ArgumentParser(
@@ -161,7 +165,7 @@ if __name__ == "__main__":
     )
 
     if ar.style not in entry_functions:
-        print(f"Error: Style '{ar.style}' is not supported.", file=sys.stderr)
+        common.error(f"Error: Style '{ar.style}' is not supported.", file=sys.stderr)
         sys.exit(1)
 
     try:

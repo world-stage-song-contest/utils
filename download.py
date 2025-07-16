@@ -111,7 +111,7 @@ def main(args: Args) -> None:
     csv_path = Path(args.csv_path)
     data = defaultdict(list)
     sz = 0
-    with csv_path.open(newline='') as f:
+    with csv_path.open(newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
             sz += 1

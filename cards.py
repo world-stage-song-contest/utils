@@ -92,7 +92,7 @@ entry_functions = {
 
 def read_input(path: Path) -> list[V]:
     shows = []
-    with path.open() as f:
+    with path.open(newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
             year = int(row["year"])
@@ -101,7 +101,7 @@ def read_input(path: Path) -> list[V]:
             country = row["country"]
             artist = row["artist"]
             title = row["title"]
-            display_name = row["display_name"] or country
+            display_name = row["display_name"]
             shows.append(V(year, show, country, artist, title, ro, display_name))
     return shows
 

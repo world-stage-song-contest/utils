@@ -86,7 +86,7 @@ def setup_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Process recap videos.")
 
     parser.add_argument("csv", help="CSV file with video metadata")
-    parser.add_argument("--tmp", default="tmp", help="Temporary directory for clips and cards")
+    parser.add_argument("--tmp", default="temp", help="Temporary directory for clips and cards")
     parser.add_argument("--style", required=True, help="Style to use for the cards")
     parser.add_argument("--browser", default=None, help="Browser to use for downloads")
     parser.add_argument("--po-token", default="", help="PO token for YouTube downloads")

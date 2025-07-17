@@ -252,7 +252,6 @@ def main(args: Args) -> None:
         for vss in values:
             concat(*vss)
 
-    #cleanup(tmp)
     end2 = time.time()
     print(f"Processed {sz} shows and {n} clips in {end1 - start1:.2f} seconds", file=common.OUT_HANDLE)
     print(f"Concatenated clips in {end2 - start2:.2f} seconds", file=common.OUT_HANDLE)
@@ -271,7 +270,7 @@ if __name__ == "__main__":
     ap.add_argument("csv", type=Path, help="CSV file with video metadata")
     ap.add_argument("vidsdir", type=Path, help="Directory with input videos")
     ap.add_argument("cardsdir", type=Path, help="Directory with overlay cards")
-    ap.add_argument("--tmp", type=Path, default="tmp", help="Temporary directory for clips")
+    ap.add_argument("--tmp", type=Path, default="temp", help="Temporary directory for clips")
     ap.add_argument("-o", "--output", type=Path, default="output",
                     help="Output video directory")
     ap.add_argument("--size", default="1920x1080", type=common.parse_size,

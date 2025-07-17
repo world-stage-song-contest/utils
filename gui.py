@@ -76,7 +76,7 @@ class App(tk.Frame):
         self.csv_entry.grid(column=1, row=self._row, sticky="ew")
         ttk.Button(self, text="...", command=lambda: self.pick_file(self.csv_path)).grid(column=2, row=self._row)
         ttk.Label(self, text="Temporary directory").grid(column=0, row=self.row(), sticky="e")
-        self.tmp_path = tk.StringVar()
+        self.tmp_path = tk.StringVar(value="temp")
         self.tmp_entry = ttk.Entry(self, textvariable=self.tmp_path)
         self.tmp_entry.grid(column=1, row=self._row, sticky="ew")
         ttk.Button(self, text="...", command=lambda: self.pick_file(self.tmp_path, True)).grid(column=2, row=self._row)
@@ -142,7 +142,7 @@ class App(tk.Frame):
 
         ttk.Label(self, text="Recap settings", font=("", 18, "bold")).grid(column=0, row=self.row(), columnspan=3)
         ttk.Label(self, text="Output directory").grid(column=0, row=self.row(), sticky="e")
-        self.output_path = tk.StringVar()
+        self.output_path = tk.StringVar(value="output")
         self.output_entry = ttk.Entry(self, textvariable=self.output_path)
         self.output_entry.grid(column=1, row=self._row, sticky="ew")
         ttk.Button(self, text="...", command=lambda: self.pick_file(self.output_path, directory=True)).grid(column=2, row=self._row)

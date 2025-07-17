@@ -35,6 +35,7 @@ class Args:
     fps: int
     multiprocessing: bool
     fade_duration: float
+    ffmpeg: str
 
 def hms(sec: float) -> str:
     h, rem = divmod(sec, 3600)
@@ -84,7 +85,7 @@ def build_af(dur: float, fade_dur: float) -> str:
 
 def process_clip(out_: Path, src: Path, overlay: Path,
                  start: float, end: float, size: Tuple[int, int],
-                 fps: int, fade_dur: float) -> None:
+                 fps: int, fade_dur: float, ffmpeg: str) -> None:
     if not overlay.exists():
         raise FileNotFoundError(f"Overlay not found: {overlay}")
     w, h = size
@@ -92,7 +93,7 @@ def process_clip(out_: Path, src: Path, overlay: Path,
     vf = build_vf(w, h, fps, dur, fade_dur)
     af = build_af(dur, fade_dur)
     common.run([
-        "ffmpeg", "-hide_banner", "-y", "-ss", hms(start), "-to", hms(end),
+        ffmpeg, "-hide_banner", "-y", "-ss", hms(start), "-to", hms(end),
         "-i", str(src), "-i", str(overlay),
         "-filter_complex", f"{vf};{af}",
         "-map", "[v]", "-map", "[a]", "-r", str(fps),
@@ -119,18 +120,18 @@ def make_chapter_data(data: List[Data], args: Args, out_: Path):
 
     out_.write_text(''.join(chapters))
 
-def concat(clips: List[Path], metadata: Path, temp_video: Path, out_: Path) -> None:
+def concat(clips: List[Path], metadata: Path, temp_video: Path, out_: Path, ffmpeg: str) -> None:
     manifest = temp_video.with_suffix(".txt")
     manifest.write_text("\n".join(f"file '{c.absolute()}'" for c in clips))
 
-    common.run(["ffmpeg",
+    common.run([ffmpeg,
          "-hide_banner", "-y", "-f", "concat",
          "-safe", "0", "-i", str(manifest),
          "-c:v", "libx264", "-crf", "18", "-preset", "medium",
          "-c:a", "aac", "-b:a", "192k",
          "-movflags", "faststart", str(temp_video)])
 
-    common.run(["ffmpeg", "-hide_banner", "-y", "-i", str(temp_video),
+    common.run([ffmpeg, "-hide_banner", "-y", "-i", str(temp_video),
          "-i", str(metadata),
          "-map_metadata", "1", "-c", "copy",
          str(out_)])
@@ -139,7 +140,7 @@ def process_row(row: Data, srcd: Path, cardsd: Path, clipsd: Path, args: Args) -
     out_clip = clipsd / f"{row.year}_{row.show}_{row.ro:02d}_{str(row.country)}.mp4"
 
     if out_clip.exists():
-        common.write(f"[recap] {out_clip} already exists, skipping.")
+        print(f"[recap] {out_clip} already exists, skipping.", file=common.OUT_HANDLE)
         return ((row.year, row.show), out_clip)
 
     card_name = f"{row.year}_{row.show}_{row.ro:02d}_{str(row.country)}.png"
@@ -164,7 +165,7 @@ def process_row(row: Data, srcd: Path, cardsd: Path, clipsd: Path, args: Args) -
     if s1 <= s0:
         raise RuntimeError(f"Snapping produced empty clip (order={row.ro}).")
 
-    process_clip(out_clip, src, overlay, s0, s1, args.size, args.fps, args.fade_duration)
+    process_clip(out_clip, src, overlay, s0, s1, args.size, args.fps, args.fade_duration, args.ffmpeg)
     return ((row.year, row.show), out_clip)
 
 def main(args: Args) -> None:
@@ -196,7 +197,7 @@ def main(args: Args) -> None:
     clipsd.mkdir(parents=True, exist_ok=True)
     clips: dict[tuple[int, str], list[Path]] = defaultdict(list)
 
-    common.write(f"Processing {sz} clips...")
+    print(f"Processing {sz} clips...", file=common.OUT_HANDLE)
     start1 = time.time()
 
     temp_clips = []
@@ -215,7 +216,7 @@ def main(args: Args) -> None:
 
     end1 = time.time()
 
-    common.write(f"Concatenating clips...")
+    print(f"Concatenating clips...", file=common.OUT_HANDLE)
     values = []
     start2 = time.time()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -225,19 +226,23 @@ def main(args: Args) -> None:
         vs = data[key]
         clip_list.sort(key=lambda c: c.name)
         output = args.output / f"{key[0]}_{key[1]}_recap.mp4"
-        print(output)
-        temp_output = tmp / output.with_suffix(".temp.mp4").name
-        metadata = tmp / output.with_suffix(".meta.txt").name
-        make_chapter_data(vs, args, metadata)
+        if not output.exists():
+            temp_output = tmp / output.with_suffix(".temp.mp4").name
+            metadata = tmp / output.with_suffix(".meta.txt").name
+            make_chapter_data(vs, args, metadata)
+            values.append((clip_list, metadata, temp_output, output, args.ffmpeg))
+        else:
+            print(f"[recap] {output} exists, skipping", file=common.OUT_HANDLE)
 
-        rev_list = list(reversed(clip_list))
-        rev_output = args.output.with_name(f"{output.stem}_rev{output.suffix}")
-        temp_rev_output = tmp / rev_output.with_suffix(".temp.mp4").name
-        rev_metadata = tmp / rev_output.with_suffix(".meta.txt").name
-        make_chapter_data(list(reversed(vs)), args, rev_metadata)
-
-        values.append((clip_list, metadata, temp_output, output))
-        values.append((rev_list, rev_metadata, temp_rev_output, rev_output))
+        rev_output = output.with_stem(f"{key[0]}_{key[1]}_recap_rev")
+        if not rev_output.exists():
+            rev_list = list(reversed(clip_list))
+            temp_rev_output = tmp / rev_output.with_suffix(".temp.mp4").name
+            rev_metadata = tmp / rev_output.with_suffix(".meta.txt").name
+            make_chapter_data(list(reversed(vs)), args, rev_metadata)
+            values.append((rev_list, rev_metadata, temp_rev_output, rev_output, args.ffmpeg))
+        else:
+            print(f"[recap] {rev_output} exists, skipping", file=common.OUT_HANDLE)
 
     if args.multiprocessing:
         mp.Pool(mp.cpu_count()).starmap(
@@ -249,9 +254,9 @@ def main(args: Args) -> None:
 
     #cleanup(tmp)
     end2 = time.time()
-    common.write(f"Processed {sz} shows and {n} clips in {end1 - start1:.2f} seconds")
-    common.write(f"Concatenated clips in {end2 - start2:.2f} seconds")
-    common.write(f"Total processing time: {end2 - start1:.2f} seconds")
+    print(f"Processed {sz} shows and {n} clips in {end1 - start1:.2f} seconds", file=common.OUT_HANDLE)
+    print(f"Concatenated clips in {end2 - start2:.2f} seconds", file=common.OUT_HANDLE)
+    print(f"Total processing time: {end2 - start1:.2f} seconds", file=common.OUT_HANDLE)
 
 def main_wrapper(args: Args):
     if os.name == 'nt' and not common.is_admin():
@@ -260,10 +265,6 @@ def main_wrapper(args: Args):
     main(args)
 
 if __name__ == "__main__":
-    if shutil.which("ffmpeg") is None:
-        common.error("Error: ffmpeg is not installed.", file=sys.stderr)
-        sys.exit(1)
-
     ap = argparse.ArgumentParser(
         description="Cut & assemble snippets (16:9, −14 LUFS, overlay, constant fps)."
     )
@@ -281,7 +282,12 @@ if __name__ == "__main__":
                     help="Duration of fade-in and fade-out in seconds (default: 0.25)")
     ap.add_argument("--multiprocessing", action="store_true",
                     help="Use multiprocessing to speed up the processing of clips")
+    ap.add_argument("--ffmpeg", default="ffmpeg", help="Path to the ffmpeg executable")
     args = ap.parse_args()
+
+    if shutil.which(args.ffmpeg) is None:
+        print(f"Error: {args.ffmpeg} not found.", file=common.ERR_HANDLE)
+        sys.exit(1)
 
     ar = Args(
         csv_path=args.csv,
@@ -292,7 +298,8 @@ if __name__ == "__main__":
         size=args.size,
         fps=args.fps,
         multiprocessing=args.multiprocessing,
-        fade_duration=args.fade_duration
+        fade_duration=args.fade_duration,
+        ffmpeg=args.ffmpeg
     )
 
     try:

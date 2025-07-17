@@ -24,6 +24,9 @@ class Args:
     multiprocessing: bool
     cleanup: bool
     stages: list[str]
+    ffmpeg: str
+    yt_dlp: str
+    inkscape: str
 
 def cleanup(tmp: Path) -> None:
     for root, dirs, files in tmp.walk(top_down=False):
@@ -42,6 +45,8 @@ def exec(args: Args) -> None:
             browser=args.browser,
             multiprocessing=args.multiprocessing,
             po_token=args.po_token,
+            yt_dlp=args.yt_dlp,
+            ffmpeg=args.ffmpeg,
         ))
 
     # Create cards
@@ -52,6 +57,7 @@ def exec(args: Args) -> None:
             outdir=args.tmpdir / "cards",
             multiprocessing=args.multiprocessing,
             size=args.size,
+            inkscape=args.inkscape,
         ))
 
     # Create recap video
@@ -66,6 +72,7 @@ def exec(args: Args) -> None:
             fps=args.fps,
             multiprocessing=args.multiprocessing,
             fade_duration=args.fade_duration,
+            ffmpeg=args.ffmpeg,
         ))
 
     # Cleanup temporary files
@@ -73,7 +80,7 @@ def exec(args: Args) -> None:
         cleanup(args.tmpdir)
 
     end = time.time()
-    print(f"Total processing time: {end - start:.2f} seconds")
+    print(f"Total processing time: {end - start:.2f} seconds", file=common.OUT_HANDLE)
 
 def setup_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Process recap videos.")
@@ -91,6 +98,9 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--cleanup", action='store_true', help="Cleanup temporary files after processing")
     parser.add_argument("--stage", choices=["download", "cards", "recap"], action='append', default=[],
                         help="Stages to run (download, cards, recap). If not specified, all stages will be run.")
+    parser.add_argument("--inkscape", default="inkscape", help="Path to the inkscape executable")
+    parser.add_argument("--yt-dlp", default="yt-dlp", help="Path to the yt-dlp executable")
+    parser.add_argument("--ffmpeg", default="ffmpeg", help="Path to the ffmpeg executable")
 
     return parser
 
@@ -111,7 +121,10 @@ def main() -> None:
         output=Path(args.output),
         multiprocessing=args.multiprocessing,
         cleanup=args.cleanup,
-        stages=args.stage if args.stage else ["download", "cards", "recap"]
+        stages=args.stage if args.stage else ["download", "cards", "recap"],
+        ffmpeg=args.ffmpeg,
+        inkscape=args.inkscape,
+        yt_dlp=args.yt_dlp
     ))
 
 if __name__ == "__main__":

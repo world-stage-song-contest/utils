@@ -7,7 +7,7 @@ import sys
 import time
 import csv
 import shutil
-import subprocess as sp
+import os
 import multiprocessing as mp
 from pathlib import Path
 
@@ -28,6 +28,8 @@ class Args:
     browser: str | None
     multiprocessing: bool
     po_token: str | None
+    yt_dlp: str
+    ffmpeg: str
 
 _YT_RE = re.compile(r"(?:youtube\.com\/watch.*?[?&]v=|youtu\.be\/)([\w-]{11})")
 _GDRIVE_RE = re.compile(r"/d/([A-Za-z0-9_-]{10,})")
@@ -38,19 +40,19 @@ def youtube_id(url: str) -> str:
         raise ValueError(f"Cannot parse YouTube id from: {url}")
     return m.group(1)
 
-def download_video(url: str, name: str, out_dir: Path, browser: str | None, po_token: str | None) -> Path:
+def download_video(url: str, name: str, out_dir: Path, browser: str | None, po_token: str | None, yt_dlp: str, ffmpeg: str) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / name
     if out_path.exists():
-        common.write(f"[dl] {name} already exists, skipping download.")
+        print(f"[dl] {name} already exists, skipping download.", file=common.OUT_HANDLE)
         return out_path
 
     # --- YouTube -------------------------------------------------------------
     if "youtu" in url:
         vid = youtube_id(url)
-        common.write(f"[dl] YT {vid}")
+        print(f"[dl] YT {vid}", file=common.OUT_HANDLE)
         yt_dlp_args = [
-            "yt-dlp", "-f", "bv*+ba/b"
+            yt_dlp, "-f", "bv*+ba/b"
         ]
 
         if po_token:
@@ -60,6 +62,10 @@ def download_video(url: str, name: str, out_dir: Path, browser: str | None, po_t
         if browser:
             yt_dlp_args.append("--cookies-from-browser")
             yt_dlp_args.append(browser)
+
+        if ffmpeg != "ffmpeg":
+            yt_dlp_args.append("--ffmpeg-location")
+            yt_dlp_args.append(ffmpeg)
 
         yt_dlp_args.append("--merge-output-format")
         yt_dlp_args.append("mp4")
@@ -76,13 +82,13 @@ def download_video(url: str, name: str, out_dir: Path, browser: str | None, po_t
     m = _GDRIVE_RE.search(url)
     if m:
         fid = m.group(1)
-        common.write(f"[dl] GDrive {fid}")
+        print(f"[dl] GDrive {fid}", file=common.OUT_HANDLE)
         common.run(["gdown", "--id", fid, "-O", str(out_path)])
         return out_path
 
     # --- Direct link ---------------------------------------------------------
     filename = url.split("?")[0].rsplit("/", 1)[-1]
-    common.write(f"[dl] {filename}")
+    print(f"[dl] {filename}", file=common.OUT_HANDLE)
     common.run(["curl", "-L", "-o", str(out_path), url])
     return out_path
 
@@ -91,18 +97,18 @@ def link_existing_clip(existing: Path, new: str) -> None:
         raise FileNotFoundError(f"Existing clip {existing} does not exist.")
     new_path = existing.parent / new
     if new_path.exists(follow_symlinks=False):
-        common.write(f"[dl] {new} already exists, skipping link creation.")
+        print(f"[dl] {new} already exists, skipping link creation.", file=common.OUT_HANDLE)
         return
-    common.write(f"[dl] Linking {existing} to {new}")
-    new_path.symlink_to(existing.name, target_is_directory=False)
+    print(f"[dl] Linking {existing} to {new}", file=common.OUT_HANDLE)
+    os.link(existing, new_path)
 
 def create_filename(row: Data) -> str:
     return f"{row.year}_{row.show}_{row.ro:02d}_{row.country}.mp4"
 
-def download_many(data: list[Data], out_dir: Path, browser: str | None, po_token: str | None) -> None:
+def download_many(data: list[Data], out_dir: Path, browser: str | None, po_token: str | None, yt_dlp: str, ffmpeg: str) -> None:
     this = data[0]
     name = create_filename(this)
-    master = download_video(this.video_link, name, out_dir, browser, po_token)
+    master = download_video(this.video_link, name, out_dir, browser, po_token, yt_dlp, ffmpeg)
     for row in data[1:]:
         new_name = create_filename(row)
         link_existing_clip(master, new_name)
@@ -127,27 +133,23 @@ def main(args: Args) -> None:
 
     args.output.mkdir(parents=True, exist_ok=True)
 
-    common.write(f"[dl] Found {sz} clips in {csv_path}")
+    print(f"[dl] Found {sz} clips in {csv_path}", file=common.OUT_HANDLE)
     start1 = time.time()
 
     if args.multiprocessing:
         mp.Pool(mp.cpu_count()).starmap(
             download_many,
-            [(v, args.output, args.browser, args.po_token) for v in data.values()]
+            [(v, args.output, args.browser, args.po_token, args.yt_dlp, args.ffmpeg) for v in data.values()]
         )
     else:
         for v in data.values():
-            download_many(v, args.output, args.browser, args.po_token)
+            download_many(v, args.output, args.browser, args.po_token, args.yt_dlp, args.ffmpeg)
 
     end1 = time.time()
 
-    common.write(f"[dl] Processed {sz} clips in {end1 - start1:.2f} seconds")
+    print(f"[dl] Processed {sz} clips in {end1 - start1:.2f} seconds", file=common.OUT_HANDLE)
 
 if __name__ == "__main__":
-    if shutil.which("yt-dlp") is None:
-        common.error("Error: yt-dlp is not installed.", file=sys.stderr)
-        sys.exit(1)
-
     ap = argparse.ArgumentParser(
         description="Download videos."
     )
@@ -159,19 +161,31 @@ if __name__ == "__main__":
     ap.add_argument("--po-token", default="", help="YouTube PO token for downloading videos")
     ap.add_argument("--multiprocessing", action="store_true",
                     help="Use multiprocessing to speed up the processing of clips")
+    ap.add_argument("--yt-dlp", default="yt-dlp", help="Path to the yt-dlp executable")
+    ap.add_argument("--ffmpeg", default="ffmpeg", help="Path to the ffmpeg executable")
     args = ap.parse_args()
+
+    if shutil.which(args.yt_dlp) is None:
+        print(f"Error: {args.yt_dlp} not found", file=common.ERR_HANDLE)
+        sys.exit(1)
+
+    if shutil.which(args.ffmpeg) is None:
+        print(f"Error: {args.ffmpeg} not found", file=common.ERR_HANDLE)
+        sys.exit(1)
 
     ar = Args(
         csv_path=args.csv,
         output=args.outdir,
         multiprocessing=args.multiprocessing,
         browser=args.browser,
-        po_token=args.po_token
+        po_token=args.po_token,
+        ffmpeg=args.ffmpeg,
+        yt_dlp=args.yt_dlp
     )
     try:
         start = time.time()
         main(ar)
         end = time.time()
-        common.write(f"Total time: {end - start:.2f} seconds")
+        print(f"Total time: {end - start:.2f} seconds", file=common.OUT_HANDLE)
     except KeyboardInterrupt:
         sys.exit(130)

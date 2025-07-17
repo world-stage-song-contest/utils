@@ -6,12 +6,6 @@ import sys, ctypes
 OUT_HANDLE = sys.stdout
 ERR_HANDLE = sys.stderr
 
-def write(*args, **kwargs):
-    print(*args, file=OUT_HANDLE, **kwargs)
-
-def error(*args, **kwargs):
-    print(*args, file=ERR_HANDLE, **kwargs)
-
 def is_admin() -> bool:
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() # type: ignore
@@ -43,7 +37,7 @@ def parse_size(arg: str) -> tuple[int, int]:
     return w, h
 
 def run(cmd: list[str] | str, *, capture: bool = True) -> sp.CompletedProcess:
-    write(shlex.join(cmd))
+    print(shlex.join(cmd), file=OUT_HANDLE)
     if isinstance(cmd, str):
         cmd = shlex.split(cmd)
     try:

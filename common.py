@@ -1,4 +1,6 @@
+from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 import shlex
 import subprocess as sp
 import sys, ctypes
@@ -11,26 +13,6 @@ def is_admin() -> bool:
         return ctypes.windll.shell32.IsUserAnAdmin() # type: ignore
     except Exception:
         return False
-
-def elevate_via_uac():
-    params = " ".join(f'"{arg}"' for arg in sys.argv[1:])
-    executable = sys.executable
-    script = sys.argv[0]
-
-    # UAC prompt
-    ret = ctypes.windll.shell32.ShellExecuteW( # type: ignore
-        None,
-        "runas",
-        executable,
-        f'"{script}" {params}',
-        None,
-        1
-    )
-
-    if int(ret) <= 32:
-        raise RuntimeError("UAC elevation failed or was cancelled.")
-    else:
-        sys.exit(0)
 
 def parse_size(arg: str) -> tuple[int, int]:
     w, h = map(int, arg.lower().split("x"))
@@ -45,6 +27,42 @@ def run(cmd: list[str] | str, *, capture: bool = True) -> sp.CompletedProcess:
     except sp.CalledProcessError as e:
         raise RuntimeError(f"\n[cmd] {' '.join(map(shlex.quote, cmd))}\n[stderr]\n{e.stderr or ''}") from None
 
+class Clips:
+    videos: dict[tuple[int, str], dict[str, Path]]
+    opening: dict[tuple[int, str], dict[str, Path]]
+    intervals: dict[tuple[int, str], dict[str, Path]]
+    postcards: dict[tuple[int, str], dict[str, Path]]
+
+    def __init__(self):
+        self.videos = defaultdict(dict)
+        self.opening = defaultdict(dict)
+        self.intervals = defaultdict(dict)
+        self.postcards = defaultdict(dict)
+
+@dataclass
+class Args:
+    csv: Path
+    style: str
+    tmpdir: Path
+    browser: str | None
+    po_token: str | None
+    size: tuple[int, int]
+    fps: int
+    fade_duration: float
+    output: Path
+    multiprocessing: bool
+    cleanup: bool
+    ffmpeg: str
+    yt_dlp: str
+    inkscape: str
+    straight: bool
+    reverse: bool
+    postcards: Path
+    vidsdir: Path
+    cardsdir: Path
+    clipsdir: Path
+    commondir: Path
+
 @dataclass
 class CS:
     name: str
@@ -54,6 +72,16 @@ class CS:
     text: str
 
 colours = {
+    "default": {
+        "black": "#000000",
+        "white": "#FFFFFF",
+        "red": "#FF0000",
+        "orange": "#FF6F00",
+        "yellow": "#FFDD00",
+        "green": "#00DD00",
+        "cyan": "#00DDFF",
+        "blue": "#5555FF"
+    },
     "70s": {
         "black": "#2D2D2D",
         "white": "#E6E6E6",
@@ -116,6 +144,7 @@ schemes = {
     'IDN': CS(name='Indonesia', bg='white', fg1='red', fg2='red', text='red'),
     'IRN': CS(name='Iran', bg='green', fg1='red', fg2='white', text='white'),
     'IRL': CS(name='Ireland', bg='green', fg1='orange', fg2='white', text='white'),
+    'IRQ': CS(name='Iraq', bg='black', fg1='red', fg2='white', text='white'),
     'ISR': CS(name='Israel', bg='white', fg1='blue', fg2='blue', text='blue'),
     'ITA': CS(name='Italy', bg='green', fg1='red', fg2='white', text='white'),
     'JAM': CS(name='Jamaica', bg='green', fg1='yellow', fg2='yellow', text='black'),
@@ -145,6 +174,7 @@ schemes = {
     'NOR': CS(name='Norway', bg='red', fg1='blue', fg2='white', text='white'),
     'PAK': CS(name='Pakistan', bg='green', fg1='white', fg2='white', text='white'),
     'PHL': CS(name='Philippines', bg='blue', fg1='yellow', fg2='red', text='white'),
+    'PER': CS(name='Peru', bg='red', fg1='white', fg2='white', text='white'),
     'POL': CS(name='Poland', bg='red', fg1='white', fg2='white', text='white'),
     'PRT': CS(name='Portugal', bg='green', fg1='red', fg2='yellow', text='white'),
     'PRI': CS(name='Puerto Rico', bg='blue', fg1='red', fg2='white', text='white'),
@@ -176,6 +206,8 @@ schemes = {
     'UZB': CS(name='Uzbekistan', bg='cyan', fg1='white', fg2='green', text='red'),
     'VEN': CS(name='Venezuela', bg='blue', fg1='red', fg2='yellow', text='white'),
     'VNM': CS(name='Vietnam', bg='red', fg1='yellow', fg2='yellow', text='yellow'),
+    'WIN': CS(name='Winner', bg='blue', fg1='green', fg2='white', text='white'),
+    'WLS': CS(name='Wales', bg='white', fg1='green', fg2='green', text='red'),
     'YUG': CS(name='Yugoslavia', bg='blue', fg1='yellow', fg2='red', text='white'),
     'ZWE': CS(name='Zimbabwe', bg='yellow', fg1='green', fg2='red', text='black')
 }

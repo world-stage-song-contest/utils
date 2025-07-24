@@ -3,7 +3,10 @@ __pycache__
 .venv
 output
 tmp
+temp
+common
 *.mp4
 *.csv
+*.cfg
 .DS_Store
 thumbs.db

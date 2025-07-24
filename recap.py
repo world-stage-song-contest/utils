@@ -2,9 +2,6 @@
 import argparse
 from collections import defaultdict
 from dataclasses import dataclass
-import os
-import shutil
-import sys
 import time
 import csv
 import multiprocessing as mp
@@ -15,27 +12,15 @@ import common
 
 @dataclass
 class Data:
-    ro: int
+    ro: str
     year: int
     show: str
     country: str
     artist: str
     title: str
+    path: Path
     snippet_start: float
     snippet_end: float
-
-@dataclass
-class Args:
-    csv_path: Path
-    vids_dir: Path
-    cards_dir: Path
-    tmp_dir: Path
-    output: Path
-    size: Tuple[int, int]
-    fps: int
-    multiprocessing: bool
-    fade_duration: float
-    ffmpeg: str
 
 def hms(sec: float) -> str:
     h, rem = divmod(sec, 3600)
@@ -48,7 +33,7 @@ def build_vf(target_w: int, target_h: int, fps: int,
     square-pixels → fit/pad to 16:9 → overlay → optional fade-in/out
     → constant-fps → yuv420p   ==> label [v]
     """
-    r169 = target_w / target_h        # 1.777…
+    r = f"{target_w}/{target_h}"
     filt = []
 
     # 1. square the pixels
@@ -56,14 +41,12 @@ def build_vf(target_w: int, target_h: int, fps: int,
                 ":flags=lanczos,setsar=1[sq]")
 
     # 2. fit & pad
-    filt.append(f"[sq]scale="
-                f"w='if(gt(a,{r169:.6f}),{target_w},-2)':"
-                f"h='if(gt(a,{r169:.6f}),-2,{target_h})':flags=lanczos,"
-                f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2[fit]")
+    filt.append(f"[sq]scale=w='if(gt(a,{r}),{target_w},-2)':"
+                f"h='if(gt(a,{r}),-2,{target_h})':flags=lanczos,"
+                f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1[fit]")
 
-    # 3. overlay (card scaled 92.5 %)
-    filt.append("[1:v]scale=iw*0.925:ih*0.925[ol]")
-    filt.append("[fit][ol]overlay=(W-w)/2:(H-h)/2:format=auto[ovl]")
+    # 3. overlay
+    filt.append("[fit][1:v]overlay=(W-w)/2:(H-h)/2:format=auto[ovl]")
 
     # 4. optional fades (use the *current* label each time)
     filt.append(f"[ovl]fade=t=in:st=0:d={fade_dur:.3f}[fi]")
@@ -79,27 +62,30 @@ def build_af(dur: float, fade_dur: float) -> str:
     """
     chain = ("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11"
              f",afade=t=in:st=0:d={fade_dur:.3f}"
-             f",afade=t=out:st={dur-fade_dur:.3f}:d={fade_dur}[a]")
+             f",afade=t=out:st={dur-fade_dur:.3f}:d={fade_dur:.3f}[a]")
     return chain
 
 
 def process_clip(out_: Path, src: Path, overlay: Path,
-                 start: float, end: float, size: Tuple[int, int],
-                 fps: int, fade_dur: float, ffmpeg: str) -> None:
+                 start: float, end: float, args: common.Args) -> None:
     if not overlay.exists():
         raise FileNotFoundError(f"Overlay not found: {overlay}")
-    w, h = size
+    w, h = args.size
     dur = end - start
-    vf = build_vf(w, h, fps, dur, fade_dur)
-    af = build_af(dur, fade_dur)
+    vf = build_vf(w, h, args.fps, dur, args.fade_duration)
+    af = build_af(dur, args.fade_duration)
+    temp_out = out_.with_suffix(".temp.mp4")
     common.run([
-        ffmpeg, "-hide_banner", "-y", "-ss", hms(start), "-to", hms(end),
+        args.ffmpeg, "-hide_banner", "-y",
+        "-ss", hms(start), "-to", hms(end),
         "-i", str(src), "-i", str(overlay),
         "-filter_complex", f"{vf};{af}",
-        "-map", "[v]", "-map", "[a]", "-r", str(fps),
+        "-map", "[v]", "-map", "[a]", "-r", str(args.fps),
         "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-c:a", "aac", "-b:a", "192k", str(out_)
+        "-ac", "2", "-c:a", "aac", "-b:a", "192k", str(temp_out)
     ])
+
+    temp_out.rename(out_)
 
 def make_country_data(data: Data, prev_duration: float, fade_duration: float) -> str:
     end = prev_duration + int(data.snippet_end - data.snippet_start) + fade_duration
@@ -111,40 +97,38 @@ END={end * 1000:.0f}
 title={common.schemes[data.country].name}: {data.artist} - {data.title}
 """
 
-def make_chapter_data(data: List[Data], args: Args, out_: Path):
+def make_chapter_data(data: List[Data], args: common.Args, out_: Path):
     prev_duration = 1.0
     chapters = [';FFMETADATA1\n']
     for d in data:
         chapters.append(make_country_data(d, prev_duration, args.fade_duration))
         prev_duration += int(d.snippet_end - d.snippet_start) + args.fade_duration * 2
 
-    out_.write_text(''.join(chapters))
+    out_.write_text(''.join(chapters), encoding='utf-8')
 
-def concat(clips: List[Path], metadata: Path, temp_video: Path, out_: Path, ffmpeg: str) -> None:
-    manifest = temp_video.with_suffix(".txt")
-    manifest.write_text("\n".join(f"file '{c.absolute()}'" for c in clips))
+def concat(clips: List[Path], metadata: Path, manifest: Path, out_: Path, ffmpeg: str, key: tuple[int, str]) -> tuple[tuple[int, str], Path]:
+    manifest.write_text("\n".join(f"file '{c.absolute()}'" for c in clips), encoding='utf-8')
 
+    temp_out = out_.with_suffix(".temp.mp4")
     common.run([ffmpeg,
          "-hide_banner", "-y", "-f", "concat",
          "-safe", "0", "-i", str(manifest),
-         "-c:v", "libx264", "-crf", "18", "-preset", "medium",
-         "-c:a", "aac", "-b:a", "192k",
-         "-movflags", "faststart", str(temp_video)])
+         "-f", "ffmetadata", "-i", str(metadata),
+         "-map", "0", "-map_metadata", "1",
+         "-c", "copy",
+         "-movflags", "faststart",
+         str(temp_out)])
 
-    common.run([ffmpeg, "-hide_banner", "-y", "-i", str(temp_video),
-         "-i", str(metadata),
-         "-map_metadata", "1", "-c", "copy",
-         str(out_)])
+    temp_out.rename(out_)
 
-def process_row(row: Data, srcd: Path, cardsd: Path, clipsd: Path, args: Args) -> tuple[tuple[int, str], Path]:
-    out_clip = clipsd / f"{row.year}_{row.show}_{row.ro:02d}_{str(row.country)}.mp4"
+    return (key, out_)
 
+def process_row(row: Data, srcd: Path, cardsd: Path, clipsd: Path, args: common.Args) -> tuple[tuple[int, str], Path]:
+    out_clip = clipsd / f"{row.year}" / row.show / f"{row.country}.mp4"
+    out_clip.parent.mkdir(parents=True, exist_ok=True)
     if out_clip.exists():
         print(f"[recap] {out_clip} already exists, skipping.", file=common.OUT_HANDLE)
         return ((row.year, row.show), out_clip)
-
-    card_name = f"{row.year}_{row.show}_{row.ro:02d}_{str(row.country)}.png"
-    vid_name = f"{row.year}_{row.show}_{row.ro:02d}_{str(row.country)}.mp4"
 
     snippet_end = row.snippet_end + args.fade_duration
 
@@ -153,10 +137,10 @@ def process_row(row: Data, srcd: Path, cardsd: Path, clipsd: Path, args: Args) -
         snippet_start = 0
         snippet_end = snippet_end + args.fade_duration
 
-    src = srcd / vid_name
+    src = row.path
     if not src.exists(follow_symlinks=False):
         raise FileNotFoundError(f"Source video not found: {src}")
-    overlay = cardsd / card_name
+    overlay = cardsd / f"{row.year}_{row.show}_{row.ro}_{row.country}.png"
     if not overlay.exists():
         raise FileNotFoundError(f"Overlay card not found: {overlay}")
 
@@ -165,53 +149,64 @@ def process_row(row: Data, srcd: Path, cardsd: Path, clipsd: Path, args: Args) -
     if s1 <= s0:
         raise RuntimeError(f"Snapping produced empty clip (order={row.ro}).")
 
-    process_clip(out_clip, src, overlay, s0, s1, args.size, args.fps, args.fade_duration, args.ffmpeg)
+    process_clip(out_clip, src, overlay, s0, s1, args)
     return ((row.year, row.show), out_clip)
 
-def main(args: Args) -> None:
-    csv_path = Path(args.csv_path)
+def main(all_clips: common.Clips, args: common.Args) -> dict[tuple[int, str], list[Path]]:
+    ret = defaultdict(list)
     data: dict[tuple[int, str], list[Data]] = defaultdict(list)
     n = 0
-    with csv_path.open(newline='', encoding='utf-8') as f:
+    with args.csv.open(newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
             n += 1
+            typ = (row.get("type",'') or 'v').strip()
+            if typ != 'v':
+                continue
+            rro = row["running_order"].strip()
+            try:
+                ro = f"{int(rro):02d}"
+            except ValueError:
+                ro = rro
             year = int(row["year"].strip())
             show = row["show"].strip()
+            country=row["country"].strip()
+            path = all_clips.videos[(year, show)][country]
             val = Data(
-                ro=int(row["running_order"].strip()),
-                country=row["country"].strip(),
+                ro=ro,
+                country=country,
                 year=year,
                 show=show,
                 artist=row["artist"].strip(),
                 title=row["title"].strip(),
-                snippet_start=float(row["snippet_start"].strip()),
-                snippet_end=float(row["snippet_end"].strip())
+                snippet_start=float(row["snippet_start"].strip() or '50'),
+                snippet_end=float(row["snippet_end"].strip() or '70'),
+                path=path,
             )
 
             data[(year, show)].append(val)
 
     sz = len(data)
 
-    clipsd = args.tmp_dir / "clips"
-    clipsd.mkdir(parents=True, exist_ok=True)
+    args.tmpdir.mkdir(parents=True, exist_ok=True)
     clips: dict[tuple[int, str], list[Path]] = defaultdict(list)
 
     print(f"Processing {sz} clips...", file=common.OUT_HANDLE)
     start1 = time.time()
 
     temp_clips = []
+    clips_dir = args.tmpdir / "clips"
     if args.multiprocessing:
         temp_clips = mp.Pool(mp.cpu_count()).starmap(
             process_row,
-            [(v, Path(args.vids_dir), Path(args.cards_dir), clipsd, args) for row in data.values() for v in row]
+            [(v, args.vidsdir, args.cardsdir, clips_dir, args) for row in data.values() for v in row]
         )
         for key, clip in temp_clips:
             clips[key].append(clip)
     else:
         for vs in data.values():
             for v in vs:
-                key, clip = process_row(v, Path(args.vids_dir), Path(args.cards_dir), clipsd, args)
+                key, clip = process_row(v, args.vidsdir, args.cardsdir, clips_dir, args)
                 clips[key].append(clip)
 
     end1 = time.time()
@@ -219,89 +214,45 @@ def main(args: Args) -> None:
     print(f"Concatenating clips...", file=common.OUT_HANDLE)
     values = []
     start2 = time.time()
+    scratch = args.tmpdir / "metadata"
     args.output.mkdir(parents=True, exist_ok=True)
-    tmp = args.tmp_dir / "recaps"
-    tmp.mkdir(parents=True, exist_ok=True)
+    scratch.mkdir(parents=True, exist_ok=True)
     for key, clip_list in clips.items():
         vs = data[key]
-        clip_list.sort(key=lambda c: c.name)
         output = args.output / f"{key[0]}_{key[1]}_recap.mp4"
-        if not output.exists():
-            temp_output = tmp / output.with_suffix(".temp.mp4").name
-            metadata = tmp / output.with_suffix(".meta.txt").name
+        if not output.exists() and args.straight:
+            manifest = scratch / output.with_suffix(".manifest.txt").name
+            metadata = scratch / output.with_suffix(".meta.txt").name
             make_chapter_data(vs, args, metadata)
-            values.append((clip_list, metadata, temp_output, output, args.ffmpeg))
+            values.append((clip_list, metadata, manifest, output, args.ffmpeg, key))
         else:
             print(f"[recap] {output} exists, skipping", file=common.OUT_HANDLE)
 
         rev_output = output.with_stem(f"{key[0]}_{key[1]}_recap_rev")
-        if not rev_output.exists():
+        if not rev_output.exists() and args.reverse:
             rev_list = list(reversed(clip_list))
-            temp_rev_output = tmp / rev_output.with_suffix(".temp.mp4").name
-            rev_metadata = tmp / rev_output.with_suffix(".meta.txt").name
+            rev_manifest = scratch / rev_output.with_suffix(".manifest.txt").name
+            rev_metadata = scratch / rev_output.with_suffix(".meta.txt").name
             make_chapter_data(list(reversed(vs)), args, rev_metadata)
-            values.append((rev_list, rev_metadata, temp_rev_output, rev_output, args.ffmpeg))
+            values.append((rev_list, rev_metadata, rev_manifest, rev_output, args.ffmpeg, key))
         else:
             print(f"[recap] {rev_output} exists, skipping", file=common.OUT_HANDLE)
 
     if args.multiprocessing:
-        mp.Pool(mp.cpu_count()).starmap(
+        vals = mp.Pool(mp.cpu_count()).starmap(
             concat, values
         )
     else:
+        vals = []
         for vss in values:
-            concat(*vss)
+            vals.append(concat(*vss))
 
     end2 = time.time()
     print(f"Processed {sz} shows and {n} clips in {end1 - start1:.2f} seconds", file=common.OUT_HANDLE)
     print(f"Concatenated clips in {end2 - start2:.2f} seconds", file=common.OUT_HANDLE)
     print(f"Total processing time: {end2 - start1:.2f} seconds", file=common.OUT_HANDLE)
 
-def main_wrapper(args: Args):
-    if os.name == 'nt' and not common.is_admin():
-        common.elevate_via_uac()
+    for key, out_ in vals:
+        ret[key].append(out_)
 
-    main(args)
-
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser(
-        description="Cut & assemble snippets (16:9, −14 LUFS, overlay, constant fps)."
-    )
-    ap.add_argument("csv", type=Path, help="CSV file with video metadata")
-    ap.add_argument("vidsdir", type=Path, help="Directory with input videos")
-    ap.add_argument("cardsdir", type=Path, help="Directory with overlay cards")
-    ap.add_argument("--tmp", type=Path, default="temp", help="Temporary directory for clips")
-    ap.add_argument("-o", "--output", type=Path, default="output",
-                    help="Output video directory")
-    ap.add_argument("--size", default="1920x1080", type=common.parse_size,
-                    help="target frame size WxH")
-    ap.add_argument("--fps", default=60, type=int,
-                    help="constant output fps (e.g. 23.98, 24, 25, 29.97, 30, 50, 59.94, 60). Default 60")
-    ap.add_argument("--fade-duration", default=0.25, type=float,
-                    help="Duration of fade-in and fade-out in seconds (default: 0.25)")
-    ap.add_argument("--multiprocessing", action="store_true",
-                    help="Use multiprocessing to speed up the processing of clips")
-    ap.add_argument("--ffmpeg", default="ffmpeg", help="Path to the ffmpeg executable")
-    args = ap.parse_args()
-
-    if shutil.which(args.ffmpeg) is None:
-        print(f"Error: {args.ffmpeg} not found.", file=common.ERR_HANDLE)
-        sys.exit(1)
-
-    ar = Args(
-        csv_path=args.csv,
-        vids_dir=args.vidsdir,
-        cards_dir=args.cardsdir,
-        tmp_dir=args.tmp,
-        output=args.output,
-        size=args.size,
-        fps=args.fps,
-        multiprocessing=args.multiprocessing,
-        fade_duration=args.fade_duration,
-        ffmpeg=args.ffmpeg
-    )
-
-    try:
-        main_wrapper(ar)
-    except KeyboardInterrupt:
-        sys.exit(130)
+    return ret

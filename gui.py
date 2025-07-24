@@ -36,17 +36,12 @@ class App(tk.Frame):
     def run(self):
         common.OUT_HANDLE = TextRedirector(self.log_area, "stdout")
         common.ERR_HANDLE = TextRedirector(self.log_area, "stderr")
-        stages = []
-        if self.download_var.get():
-            stages.append("download")
-        if self.cards_var.get():
-            stages.append("cards")
-        if self.recap_var.get():
-            stages.append("recap")
 
-        args = main.Args(
+        tmpdir = Path(self.tmp_path.get())
+
+        args = common.Args(
             csv=Path(self.csv_path.get()),
-            tmpdir=Path(self.tmp_path.get()),
+            tmpdir=tmpdir,
             browser=self.browser.get().lower() or None,
             po_token=self.po_token.get() or None,
             style=self.style.get(),
@@ -56,10 +51,16 @@ class App(tk.Frame):
             fade_duration=float(self.fade_duration.get()),
             multiprocessing=self.multiprocessing_var.get(),
             cleanup=self.cleanup_var.get(),
-            stages=stages,
             ffmpeg=self.ffmpeg_path.get(),
             yt_dlp=self.yt_dlp_path.get(),
             inkscape=self.inkscape_path.get(),
+            straight=self.straight_var.get(),
+            reverse=self.reverse_var.get(),
+            commondir=Path("common"),
+            postcards=Path("postcards"),
+            vidsdir=tmpdir / "videos",
+            cardsdir=tmpdir / "cards",
+            clipsdir=tmpdir / "clips",
         )
         p = mp.Process(target=main.exec, args=(args,))
         p.start()
@@ -75,7 +76,7 @@ class App(tk.Frame):
         self.csv_entry = ttk.Entry(self, textvariable=self.csv_path)
         self.csv_entry.grid(column=1, row=self._row, sticky="ew")
         ttk.Button(self, text="...", command=lambda: self.pick_file(self.csv_path)).grid(column=2, row=self._row)
-        ttk.Label(self, text="Temporary directory").grid(column=0, row=self.row(), sticky="e")
+        ttk.Label(self, text="Temp dir").grid(column=0, row=self.row(), sticky="e")
         self.tmp_path = tk.StringVar(value="temp")
         self.tmp_entry = ttk.Entry(self, textvariable=self.tmp_path)
         self.tmp_entry.grid(column=1, row=self._row, sticky="ew")
@@ -88,20 +89,6 @@ class App(tk.Frame):
         self.cleanup_var = tk.BooleanVar(value=False)
         self.cleanup_check = ttk.Checkbutton(self, variable=self.cleanup_var)
         self.cleanup_check.grid(column=1, row=self._row)
-
-        ttk.Label(self, text="Stages", font=("", 18, "bold")).grid(column=0, row=self.row(), columnspan=3)
-        ttk.Label(self, text="Download videos").grid(column=0, row=self.row(), sticky="e")
-        self.download_var = tk.BooleanVar(value=True)
-        self.download_check = ttk.Checkbutton(self, variable=self.download_var)
-        self.download_check.grid(column=1, row=self._row)
-        ttk.Label(self, text="Make cards").grid(column=0, row=self.row(), sticky="e")
-        self.cards_var = tk.BooleanVar(value=True)
-        self.cards_check = ttk.Checkbutton(self, variable=self.cards_var)
-        self.cards_check.grid(column=1, row=self._row)
-        ttk.Label(self, text="Make recaps").grid(column=0, row=self.row(), sticky="e")
-        self.recap_var = tk.BooleanVar(value=True)
-        self.recap_check = ttk.Checkbutton(self, variable=self.recap_var)
-        self.recap_check.grid(column=1, row=self._row)
 
         ttk.Label(self, text="Executables", font=("", 18, "bold")).grid(column=0, row=self.row(), columnspan=3)
         ttk.Label(self, text="Inkscape").grid(column=0, row=self.row(), sticky="e")
@@ -141,7 +128,7 @@ class App(tk.Frame):
         self.size_entry.grid(column=1, row=self._row, sticky="ew")
 
         ttk.Label(self, text="Recap settings", font=("", 18, "bold")).grid(column=0, row=self.row(), columnspan=3)
-        ttk.Label(self, text="Output directory").grid(column=0, row=self.row(), sticky="e")
+        ttk.Label(self, text="Output dir").grid(column=0, row=self.row(), sticky="e")
         self.output_path = tk.StringVar(value="output")
         self.output_entry = ttk.Entry(self, textvariable=self.output_path)
         self.output_entry.grid(column=1, row=self._row, sticky="ew")
@@ -154,6 +141,14 @@ class App(tk.Frame):
         self.fps = tk.StringVar(value="60")
         self.fps_entry = ttk.Entry(self, textvariable=self.fps)
         self.fps_entry.grid(column=1, row=self._row, sticky="ew")
+        ttk.Label(self, text="Straight recap").grid(column=0, row=self.row(), sticky="e")
+        self.straight_var = tk.BooleanVar(value=True)
+        self.straight_check = ttk.Checkbutton(self, variable=self.straight_var)
+        self.straight_check.grid(column=1, row=self._row)
+        ttk.Label(self, text="Reverse recap").grid(column=0, row=self.row(), sticky="e")
+        self.reverse_var = tk.BooleanVar(value=True)
+        self.reverse_check = ttk.Checkbutton(self, variable=self.reverse_var)
+        self.reverse_check.grid(column=1, row=self._row)
 
         ttk.Button(self, text="Run", command=self.run).grid(column=0, row=self.row(), columnspan=3)
 

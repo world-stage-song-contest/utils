@@ -17,8 +17,11 @@ class Data:
     year: int
     show: str
     country: str
+    country_name: str
+    cc: str
     video_link: str
-    type: str
+    artist: str
+    title: str
 
     def with_other(self, **kwargs) -> 'Data':
         ret = Data(
@@ -26,8 +29,11 @@ class Data:
             year=self.year,
             show=self.show,
             country=self.country,
+            cc=self.cc,
+            country_name=self.country_name,
             video_link=self.video_link,
-            type=self.type
+            artist=self.artist,
+            title=self.title,
         )
 
         for k, v in kwargs.items():
@@ -139,7 +145,7 @@ def process_single_frame(clip: Path, result: Path, args: common.Args) -> None:
 
     still.unlink()
 
-def postprocess_clip(clip: Path, out: Path, args: common.Args, *, unlink: bool = False) -> None:
+def postprocess_clip(clip: Path, out: Path, data: Data, args: common.Args, *, unlink: bool = False) -> None:
     result = out.with_suffix(".post.mp4")
     if is_single_frame(clip):
         process_single_frame(clip, result, args)
@@ -169,7 +175,8 @@ def postprocess_clip(clip: Path, out: Path, args: common.Args, *, unlink: bool =
     if unlink:
         clip.unlink(missing_ok=True)
 
-def download_video(url: str, out_path: Path, args: common.Args) -> Path:
+def download_video(data: Data, out_path: Path, args: common.Args) -> Path:
+    url = data.video_link
     args.vidsdir.mkdir(parents=True, exist_ok=True)
     if out_path.exists():
         print(f"[dl] {out_path} already exists, skipping download.", file=common.OUT_HANDLE)
@@ -185,9 +192,8 @@ def download_video(url: str, out_path: Path, args: common.Args) -> Path:
             args.yt_dlp, "-f", "bv*+ba/b"
         ]
 
-        if args.po_token:
-            yt_dlp_args.append("--extractor-args")
-            yt_dlp_args.append("youtube:player-client=default,mweb;po_token={po_token}")
+        yt_dlp_args.append("--extractor-args")
+        yt_dlp_args.append("youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416")
 
         if args.browser:
             yt_dlp_args.append("--cookies-from-browser")
@@ -197,7 +203,7 @@ def download_video(url: str, out_path: Path, args: common.Args) -> Path:
             yt_dlp_args.append("--ffmpeg-location")
             yt_dlp_args.append(args.ffmpeg)
 
-        yt_dlp_args.append("--merge-output-format")
+        yt_dlp_args.append("-f")
         yt_dlp_args.append("mp4")
 
         yt_dlp_args.append("-o")
@@ -218,7 +224,8 @@ def download_video(url: str, out_path: Path, args: common.Args) -> Path:
         filename = url.split("?")[0].rsplit("/", 1)[-1]
         print(f"[dl] {filename}", file=common.OUT_HANDLE)
         common.run(["curl", "-L", "-o", str(dl_path), url])
-    postprocess_clip(dl_path, out_path, args, unlink=True)
+
+    postprocess_clip(dl_path, out_path, data, args, unlink=True)
 
     return out_path
 
@@ -226,38 +233,39 @@ def link_existing_clip(existing: Path, new: Path) -> Path:
     if new.exists(follow_symlinks=False):
         print(f"[dl] {new} already exists, skipping link creation.", file=common.OUT_HANDLE)
         return new
+    new.parent.mkdir(parents=True, exist_ok=True)
     print(f"[dl] Linking {existing} to {new}", file=common.OUT_HANDLE)
     new.symlink_to(existing.absolute())
     return new
 
 def create_filename(row: Data, path: Path) -> Path:
-    p = path / f"{row.year}" / row.show / row.type / f"{row.country}.mp4"
+    p = path / f"{row.year}" / row.show / f"{row.ro}_{row.country}.mov"
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 
-def download_many(data: list[Data], args: common.Args) -> list[tuple[str, int, str, str, Path]]:
+def download_many(data: list[Data], args: common.Args) -> list[tuple[int, str, str, Path]]:
     ret = []
     this = data[0]
     source = get_known_name_path(this.video_link, this, args)
     if source:
         for d in data:
             name = create_filename(d, args.vidsdir)
-            postprocess_clip(source, name, args, unlink=False)
-            ret.append((d.type, d.year, d.show, d.country, name))
+            postprocess_clip(source, name, d, args, unlink=False)
+            ret.append((d.year, d.show, d.country, name))
         return ret
 
     name = create_filename(this, args.vidsdir)
-    master = download_video(this.video_link, name, args)
-    ret.append((this.type, this.year, this.show, this.country, master))
+    master = download_video(this, name, args)
+    ret.append((this.year, this.show, this.country, master))
     for row in data[1:]:
         new_name = create_filename(row, args.vidsdir)
         p = link_existing_clip(master, new_name)
-        ret.append((row.type, row.year, row.show, row.country, p))
+        ret.append((row.year, row.show, row.country, p))
     return ret
 
 def main(args: common.Args) -> common.Clips:
     data = defaultdict(list)
-    ret = common.Clips()
+    ret: common.Clips = defaultdict(dict)
     sz = 0
 
     postcards = {}
@@ -272,25 +280,24 @@ def main(args: common.Args) -> common.Clips:
         for row in reader:
             sz += 1
             video_link = row["video_link"].strip()
+            raw_ro = row["running_order"].strip()
+            try:
+                ro = f"{int(raw_ro):02d}"
+            except ValueError:
+                ro = raw_ro
             val = Data(
-                ro=row["running_order"].strip(),
+                ro=ro,
                 year=int(row["year"].strip()),
                 show=row["show"].strip(),
                 country=row["country"].strip(),
-                type=(row.get("type",'') or 'v').strip(),
+                cc=row["country_code"].strip(),
                 video_link=video_link,
+                artist=row["artist"].strip(),
+                title=row["title"].strip(),
+                country_name=row["country_name"].strip(),
             )
 
             data[video_link].append(val)
-
-            if val.type == 'v':
-                video_link = postcards.get(val.country, video_link)
-                if not video_link:
-                    print(f"[dl] No postcard video for {val.country}, skipping.", file=common.ERR_HANDLE)
-                    sys.exit(1)
-
-                val = val.with_other(video_link=video_link, type="p")
-                #data[video_link].append(val)
 
     args.vidsdir.mkdir(parents=True, exist_ok=True)
 
@@ -314,14 +321,7 @@ def main(args: common.Args) -> common.Clips:
 
     print(f"[dl] Processed {sz} clips in {end1 - start1:.2f} seconds", file=common.OUT_HANDLE)
 
-    for type, year, show, country, path in clips:
-        if type == 'v':
-            ret.videos[(year, show)][country] = path
-        elif type == 'o':
-            ret.opening[(year, show)][country] = path
-        elif type == 'i':
-            ret.intervals[(year, show)][country] = path
-        elif type == 'p':
-            ret.postcards[(year, show)][country] = path
+    for year, show, country, path in clips:
+        ret[(year, show)][country] = path
 
     return ret

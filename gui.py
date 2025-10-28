@@ -61,6 +61,8 @@ class App(tk.Frame):
             vidsdir=tmpdir / "videos",
             cardsdir=tmpdir / "cards",
             clipsdir=tmpdir / "clips",
+            thumb=Path("thumb.jpg"),
+            flagsdir=Path("flags"),
         )
         p = mp.Process(target=main.exec, args=(args,))
         p.start()

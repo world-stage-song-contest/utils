@@ -10,7 +10,7 @@ import time
 import cards
 import download
 import recap
-import thumbnails
+#import thumbnails
 import common
 
 def cleanup(tmp: Path) -> None:

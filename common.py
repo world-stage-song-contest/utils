@@ -27,17 +27,7 @@ def run(cmd: list[str] | str, *, capture: bool = True) -> sp.CompletedProcess:
     except sp.CalledProcessError as e:
         raise RuntimeError(f"\n[cmd] {' '.join(map(shlex.quote, cmd))}\n[stderr]\n{e.stderr or ''}") from None
 
-class Clips:
-    videos: dict[tuple[int, str], dict[str, Path]]
-    opening: dict[tuple[int, str], dict[str, Path]]
-    intervals: dict[tuple[int, str], dict[str, Path]]
-    postcards: dict[tuple[int, str], dict[str, Path]]
-
-    def __init__(self):
-        self.videos = defaultdict(dict)
-        self.opening = defaultdict(dict)
-        self.intervals = defaultdict(dict)
-        self.postcards = defaultdict(dict)
+Clips = dict[tuple[int, str], dict[str, Path]]
 
 @dataclass
 class Args:
@@ -62,6 +52,8 @@ class Args:
     cardsdir: Path
     clipsdir: Path
     commondir: Path
+    thumb: Path
+    flagsdir: Path
 
 @dataclass
 class CS:
@@ -71,6 +63,7 @@ class CS:
     fg2: str
     text: str
 
+"""
 colours = {
     "default": {
         "black": "#000000",
@@ -93,21 +86,47 @@ colours = {
         "blue": "#324561"
     }
 }
+"""
+
+colours = {
+    '70s': {
+        'white':"#EEEEEE",
+        'grey':"#C0C0C0",
+        'black':"#111111",
+        'red':"#D21034",
+        'maroon':"#8A1538",
+        'orange':"#FF7900",
+        'yellow':"#FEDD00",
+        'gold':"#C69214",
+        'green':"#008751",
+        'darkgreen':"#004225",
+        'blue':"#0052B4",
+        'navy':"#00205B",
+        'cyan':"#77B5FE",
+        'turquoise':"#0095B6",
+        'purple':"#522D80",
+        'brown':"#7C4A0E",
+    }
+}
 
 schemes = {
     'ALB': CS(name='Albania', bg='red', fg1='black', fg2='black', text='black'),
     'DZA': CS(name='Algeria', bg='green', fg1='red', fg2='white', text='white'),
     'AND': CS(name='Andorra', bg='yellow', fg1='blue', fg2='red', text='red'),
+    'AGO': CS(name='Angola', bg='black', fg1='red', fg2='red', text='yellow'),
     'ATG': CS(name='Antigua and Barbuda', bg='black', fg1='red', fg2='blue', text='yellow'),
     'ARG': CS(name='Argentina', bg='cyan', fg1='white', fg2='white', text='white'),
     'ARM': CS(name='Armenia', bg='red', fg1='white', fg2='yellow', text='yellow'),
     'AUS': CS(name='Australia', bg='blue', fg1='red', fg2='white', text='white'),
     'AUT': CS(name='Austria', bg='white', fg1='red', fg2='red', text='red'),
     'AZE': CS(name='Azerbaijan', bg='cyan', fg1='green', fg2='red', text='red'),
-    'BLR': CS(name='Belarus', bg='green', fg1='red', fg2='red', text='red'),
+    'BLR': CS(name='Belarus', bg='white', fg1='red', fg2='red', text='red'),
     'BEL': CS(name='Belgium', bg='red', fg1='yellow', fg2='black', text='black'),
-    'BIH': CS(name='Bosnia and Herzegovina', bg='blue', fg1='yellow', fg2='yellow', text='yellow'),
-    'BRA': CS(name='Brazil', bg='green', fg1='yellow', fg2='blue', text='blue'),
+    'BIH': CS(name='Bosnia and Herzegovina',bg='blue', fg1='yellow', fg2='yellow', text='yellow'),
+    'BOL': CS(name='Bolivia', bg='yellow', fg1='green', fg2='red', text='red'),
+    'BRA': CS(name='Brazil', bg='green', fg1='yellow', fg2='blue', text='yellow'),
+    'BRN': CS(name='Brunei', bg='yellow', fg1='white', fg2='red', text='black'),
+    'BGD': CS(name='Bangladesh', bg='green', fg1='red', fg2='red', text='red'),
     'BGR': CS(name='Bulgaria', bg='green', fg1='red', fg2='white', text='white'),
     'CPV': CS(name='Cabo Verde', bg='blue', fg1='white', fg2='red', text='white'),
     'KHM': CS(name='Cambodia', bg='blue', fg1='red', fg2='red', text='red'),
@@ -116,6 +135,7 @@ schemes = {
     'CHL': CS(name='Chile', bg='blue', fg1='red', fg2='white', text='white'),
     'CHN': CS(name='China', bg='red', fg1='yellow', fg2='yellow', text='yellow'),
     'COL': CS(name='Colombia', bg='red', fg1='yellow', fg2='yellow', text='yellow'),
+    'CRI': CS(name='Costa Rica', bg='red', fg1='blue', fg2='white', text='white'),
     'HRV': CS(name='Croatia', bg='blue', fg1='red', fg2='white', text='white'),
     'CUB': CS(name='Cuba', bg='blue', fg1='red', fg2='white', text='white'),
     'CYP': CS(name='Cyprus', bg='white', fg1='orange', fg2='orange', text='orange'),
@@ -124,17 +144,19 @@ schemes = {
     'DNK': CS(name='Denmark', bg='red', fg1='white', fg2='white', text='white'),
     'DOM': CS(name='Dominican Republic', bg='blue', fg1='red', fg2='white', text='white'),
     'COD': CS(name='Zaire', bg='blue', fg1='red', fg2='yellow', text='yellow'),
-    'DDR': CS(name='East Germany', bg='black', fg1='red', fg2='yellow', text='yellow'),
-    'EGY': CS(name='Egypt', bg='yellow', fg1='red', fg2='white', text='white'),
+    'DDR': CS(name='East Germany', bg='black', fg1='red', fg2='yellow', text='grey'),
+    'EGY': CS(name='Egypt', bg='red', fg1='white', fg2='black', text='black'),
     'ENG': CS(name='England', bg='red', fg1='white', fg2='white', text='white'),
-    'EST': CS(name='Estonia', bg='cyan', fg1='black', fg2='black', text='white'),
+    'EST': CS(name='Estonia', bg='cyan', fg1='black', fg2='white', text='black'),
     'ETH': CS(name='Ethiopia', bg='blue', fg1='green', fg2='red', text='yellow'),
     'FIN': CS(name='Finland', bg='white', fg1='blue', fg2='blue', text='blue'),
     'FRA': CS(name='France', bg='blue', fg1='red', fg2='white', text='white'),
     'GEO': CS(name='Georgia', bg='white', fg1='red', fg2='red', text='red'),
     'DEU': CS(name='West Germany', bg='black', fg1='red', fg2='yellow', text='yellow'),
+    'GUY': CS(name='Guyana', bg='green', fg1='yellow', fg2='red', text='white'),
     'GHA': CS(name='Ghana', bg='yellow', fg1='green', fg2='red', text='red'),
     'GRC': CS(name='Greece', bg='blue', fg1='white', fg2='white', text='white'),
+    'GRL': CS(name='Greenland', bg='white', fg1='red', fg2='white', text='red'),
     'GIN': CS(name='Guinea', bg='yellow', fg1='red', fg2='green', text='green'),
     'HTI': CS(name='Haiti', bg='red', fg1='blue', fg2='blue', text='white'),
     'HKG': CS(name='Hong Kong', bg='red', fg1='white', fg2='white', text='white'),
@@ -146,27 +168,32 @@ schemes = {
     'IRL': CS(name='Ireland', bg='green', fg1='orange', fg2='white', text='white'),
     'IRQ': CS(name='Iraq', bg='black', fg1='red', fg2='white', text='white'),
     'ISR': CS(name='Israel', bg='white', fg1='blue', fg2='blue', text='blue'),
+    'CIV': CS(name='Ivory Coast', bg='orange', fg1='green', fg2='white', text='white'),
     'ITA': CS(name='Italy', bg='green', fg1='red', fg2='white', text='white'),
     'JAM': CS(name='Jamaica', bg='green', fg1='yellow', fg2='yellow', text='black'),
     'JPN': CS(name='Japan', bg='white', fg1='red', fg2='red', text='red'),
-    'KAZ': CS(name='Kazakhstan', bg='cyan', fg1='yellow', fg2='yellow', text='yellow'),
-    'KEN': CS(name='Kenya', bg='red', fg1='black', fg2='green', text='white'),
+    'KAZ': CS(name='Kazakhstan', bg='turquoise',fg1='yellow', fg2='yellow', text='yellow'),
+    'KEN': CS(name='Kenya', bg='red', fg1='black', fg2='darkgreen',text='white'),
     'XKK': CS(name='Kosovo', bg='blue', fg1='yellow', fg2='white', text='white'),
     'KGZ': CS(name='Kyrgyzstan', bg='red', fg1='yellow', fg2='yellow', text='yellow'),
-    'LVA': CS(name='Latvia', bg='red', fg1='white', fg2='white', text='white'),
-    'LBN': CS(name='Lebanon', bg='green', fg1='red', fg2='white', text='white'),
+    'LAO': CS(name='Laos', bg='red', fg1='navy', fg2='navy', text='white'),
+    'LVA': CS(name='Latvia', bg='maroon', fg1='white', fg2='white', text='white'),
+    'LBN': CS(name='Lebanon', bg='white', fg1='green', fg2='red', text='red'),
     'LIE': CS(name='Liechtenstein', bg='red', fg1='blue', fg2='blue', text='blue'),
+    'LKA': CS(name='Sri Lanka', bg='brown', fg1='yellow', fg2='green', text='yellow'),
     'LTU': CS(name='Lithuania', bg='green', fg1='red', fg2='yellow', text='yellow'),
     'LUX': CS(name='Luxembourg', bg='cyan', fg1='red', fg2='white', text='white'),
     'MDG': CS(name='Madagascar', bg='green', fg1='red', fg2='white', text='white'),
     'MYS': CS(name='Malaysia', bg='blue', fg1='red', fg2='yellow', text='white'),
     'MLT': CS(name='Malta', bg='red', fg1='white', fg2='white', text='white'),
-    'MEX': CS(name='Mexico', bg='green', fg1='white', fg2='red', text='white'),
+    'MEX': CS(name='Mexico', bg='green', fg1='white', fg2='red', text='brown'),
     'MDA': CS(name='Moldova', bg='blue', fg1='red', fg2='yellow', text='yellow'),
     'MCO': CS(name='Monaco', bg='red', fg1='white', fg2='white', text='white'),
+    'MMR': CS(name='Burma', bg='green', fg1='yellow', fg2='red', text='white'),
     'MNG': CS(name='Mongolia', bg='blue', fg1='red', fg2='red', text='yellow'),
-    'MNE': CS(name='Montenegro', bg='red', fg1='yellow', fg2='yellow', text='yellow'),
+    'MNE': CS(name='Montenegro', bg='red', fg1='yellow', fg2='yellow', text='purple'),
     'MAR': CS(name='Morocco', bg='red', fg1='green', fg2='green', text='green'),
+    'NIC': CS(name="Nicaragua", bg='cyan', fg1='white', fg2='white', text='white'),
     'NLD': CS(name='Netherlands', bg='blue', fg1='red', fg2='white', text='white'),
     'NZL': CS(name='New Zealand', bg='blue', fg1='red', fg2='white', text='white'),
     'NGA': CS(name='Nigeria', bg='green', fg1='white', fg2='white', text='white'),
@@ -178,11 +205,13 @@ schemes = {
     'POL': CS(name='Poland', bg='red', fg1='white', fg2='white', text='white'),
     'PRT': CS(name='Portugal', bg='green', fg1='red', fg2='yellow', text='white'),
     'PRI': CS(name='Puerto Rico', bg='blue', fg1='red', fg2='white', text='white'),
+    'PRY': CS(name='Paraguay', bg='white', fg1='blue', fg2='blue', text='red'),
     'ROU': CS(name='Romania', bg='blue', fg1='red', fg2='yellow', text='yellow'),
     'RUS': CS(name='Russia', bg='blue', fg1='red', fg2='white', text='white'),
     'SMR': CS(name='San Marino', bg='cyan', fg1='white', fg2='white', text='white'),
     'SCT': CS(name='Scotland', bg='blue', fg1='white', fg2='white', text='white'),
     'SCG': CS(name='Serbia and Montenegro', bg='blue', fg1='red', fg2='white', text='white'),
+    'SLV': CS(name="El Salvador", bg='blue', fg1='white', fg2='white', text='yellow'),
     'SRB': CS(name='Serbia', bg='blue', fg1='red', fg2='white', text='white'),
     'SGP': CS(name='Singapore', bg='red', fg1='white', fg2='white', text='white'),
     'SVK': CS(name='Slovakia', bg='blue', fg1='red', fg2='white', text='white'),
@@ -190,7 +219,7 @@ schemes = {
     'ZAF': CS(name='South Africa', bg='green', fg1='red', fg2='blue', text='yellow'),
     'KOR': CS(name='South Korea', bg='white', fg1='blue', fg2='red', text='black'),
     'SUN': CS(name='Soviet Union', bg='red', fg1='yellow', fg2='yellow', text='yellow'),
-    'ESP': CS(name='Spain', bg='red', fg1='yellow', fg2='yellow', text='yellow'),
+    'ESP': CS(name='Spain', bg='red', fg1='gold', fg2='gold', text='gold'),
     'SUR': CS(name='Suriname', bg='green', fg1='yellow', fg2='red', text='white'),
     'SWE': CS(name='Sweden', bg='blue', fg1='yellow', fg2='yellow', text='yellow'),
     'CHE': CS(name='Switzerland', bg='red', fg1='white', fg2='white', text='white'),
@@ -200,8 +229,8 @@ schemes = {
     'TUN': CS(name='Tunisia', bg='red', fg1='white', fg2='white', text='white'),
     'TUR': CS(name='Turkey', bg='red', fg1='white', fg2='white', text='white'),
     'UKR': CS(name='Ukraine', bg='blue', fg1='yellow', fg2='yellow', text='yellow'),
-    'GBR': CS(name='United Kingdom', bg='blue', fg1='red', fg2='white', text='white'),
-    'USA': CS(name='United States', bg='blue', fg1='red', fg2='white', text='white'),
+    'GBR': CS(name='United Kingdom', bg='navy', fg1='red', fg2='white', text='white'),
+    'USA': CS(name='United States', bg='navy', fg1='red', fg2='white', text='white'),
     'URY': CS(name='Uruguay', bg='white', fg1='blue', fg2='blue', text='blue'),
     'UZB': CS(name='Uzbekistan', bg='cyan', fg1='white', fg2='green', text='red'),
     'VEN': CS(name='Venezuela', bg='blue', fg1='red', fg2='yellow', text='white'),
@@ -209,5 +238,16 @@ schemes = {
     'WIN': CS(name='Winner', bg='blue', fg1='green', fg2='white', text='white'),
     'WLS': CS(name='Wales', bg='white', fg1='green', fg2='green', text='red'),
     'YUG': CS(name='Yugoslavia', bg='blue', fg1='yellow', fg2='red', text='white'),
-    'ZWE': CS(name='Zimbabwe', bg='yellow', fg1='green', fg2='red', text='black')
+    'ZWE': CS(name='Zimbabwe', bg='yellow', fg1='green', fg2='red', text='black'),
+}
+
+show_name_map = {
+    "sf": "Semi-Final",
+    "sf1": "Semi-Final 1",
+    "sf2": "Semi-Final 2",
+    "sf3": "Semi-Final 3",
+    "sf4": "Semi-Final 4",
+    "dtf": "Direct Qualifiers",
+    "sc": "Repechage",
+    "f": "Final",
 }

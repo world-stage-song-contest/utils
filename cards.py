@@ -32,6 +32,7 @@ MARGIN = 12
 FONT_FAMILY = "Eurostile Next LT Pro"
 
 def convert_svg_to_png(svg_path: Path, png_path: Path, inkscape: str) -> None:
+    png_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         inkscape,
         "--export-type=png",
@@ -57,8 +58,9 @@ def make_70s_entry_svg(d: ET.Element, width: int, height: int, card_height: int,
     line = svg.line(line_offset, card_height // 2 + y_off, width, card_height // 2 + y_off, stroke=m[scheme.fg1], stroke_width=MARGIN)
     d.append(line)
 
-    ro_text = svg.text(f"{v.ro:02}", 120, card_height // 2 + OFFSET, card_height // 2 + y_off + 15,
+    ro_text = svg.text(f"{v.ro}", 120, card_height // 2 + OFFSET, card_height // 2 + y_off + 15,
                         fill=m[scheme.text], text_anchor="middle", dominant_baseline="middle",
+                        alignment_baseline="middle", text_align="center",
                         font_family=FONT_FAMILY)
     d.append(ro_text)
 
@@ -106,7 +108,7 @@ def read_input(path: Path) -> list[V]:
 width, height = 1980, 1080
 
 def process_entry(v: V, img_width: int, img_height: int, style: str, outdir: Path, inkscape: str) -> None:
-    base_name = f"{v.year}_{v.show}_{v.ro}_{v.country}"
+    base_name = f"{v.year}/{v.show}/{v.ro}_{v.country}"
     svg_path = outdir / "svg" / f"{base_name}.svg"
     svg_path.parent.mkdir(parents=True, exist_ok=True)
     png_path = outdir / f"{base_name}.png"

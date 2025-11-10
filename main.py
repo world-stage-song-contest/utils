@@ -107,9 +107,6 @@ def main() -> None:
         yt_dlp=args.yt_dlp,
         straight=args.straight,
         reverse=args.reverse,
-        commondir=args.common,
-        postcards=args.postcards,
-        thumb=args.thumb,
         flagsdir=args.flags,
     ))
 

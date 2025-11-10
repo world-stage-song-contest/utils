@@ -48,12 +48,9 @@ class Args:
     inkscape: str
     straight: bool
     reverse: bool
-    postcards: Path
     vidsdir: Path
     cardsdir: Path
     clipsdir: Path
-    commondir: Path
-    thumb: Path
     flagsdir: Path
 
 @dataclass

@@ -41,16 +41,6 @@ class Data:
 
         return ret
 
-def get_known_name_path(name: str, data: Data, args: common.Args) -> Path | None:
-    if name in ["recap", "recap_rev"]:
-        return args.vidsdir / f"{data.year}_{data.show}_{name}.mp4"
-    elif name in ["silence", "timer"]:
-        return args.commondir / f"{name}.mp4"
-    elif name == "opening":
-        return args.commondir / f"{data.year}_opening.mp4"
-
-    return None
-
 _YT_RE = re.compile(r"(?:youtube\.com\/watch.*?[?&]v=|youtu\.be\/)([\w-]{11})")
 _GDRIVE_RE = re.compile(r"/d/([A-Za-z0-9_-]{10,})")
 
@@ -246,13 +236,6 @@ def create_filename(row: Data, path: Path) -> Path:
 def download_many(data: list[Data], args: common.Args) -> list[tuple[int, str, str, str, Path]]:
     ret = []
     this = data[0]
-    source = get_known_name_path(this.video_link, this, args)
-    if source:
-        for d in data:
-            name = create_filename(d, args.vidsdir)
-            postprocess_clip(source, name, d, args, unlink=False)
-            ret.append((d.year, d.show, d.country, d.ro, name))
-        return ret
 
     name = create_filename(this, args.vidsdir)
     master = download_video(this, name, args)
@@ -267,13 +250,6 @@ def main(args: common.Args) -> common.Clips:
     data = defaultdict(list)
     ret: common.Clips = defaultdict(dict)
     sz = 0
-
-    postcards = {}
-
-    with args.postcards.open(newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            postcards[row["code"].strip()] = row["video_link"].strip()
 
     with args.csv.open(newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)

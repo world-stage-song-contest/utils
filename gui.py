@@ -56,12 +56,9 @@ class App(tk.Frame):
             inkscape=self.inkscape_path.get(),
             straight=self.straight_var.get(),
             reverse=self.reverse_var.get(),
-            commondir=Path("common"),
-            postcards=Path("postcards"),
             vidsdir=tmpdir / "videos",
             cardsdir=tmpdir / "cards",
             clipsdir=tmpdir / "clips",
-            thumb=Path("thumb.jpg"),
             flagsdir=Path("flags"),
         )
         p = mp.Process(target=main.exec, args=(args,))

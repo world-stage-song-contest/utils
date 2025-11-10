@@ -129,7 +129,7 @@ def process_entry(v: V, img_width: int, img_height: int, style: str, outdir: Pat
 
 def make_svgs(data: list[V], size: tuple[int, int], style: str, outdir: Path, multi: bool, inkscape: str) -> None:
     if multi:
-        with mp.Pool() as pool:
+        with mp.Pool(mp.cpu_count() - 2) as pool:
             pool.starmap(process_entry, [(v, size[0], size[1], style, outdir, inkscape) for v in data])
     else:
         for v in data:

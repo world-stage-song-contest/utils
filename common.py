@@ -27,7 +27,8 @@ def run(cmd: list[str] | str, *, capture: bool = True) -> sp.CompletedProcess:
     except sp.CalledProcessError as e:
         raise RuntimeError(f"\n[cmd] {' '.join(map(shlex.quote, cmd))}\n[stderr]\n{e.stderr or ''}") from None
 
-Clips = dict[tuple[int, str], dict[str, Path]]
+# year, country, ro
+Clips = dict[tuple[int, str, str], dict[str, Path]]
 
 @dataclass
 class Args:
@@ -145,10 +146,12 @@ schemes = {
     'DOM': CS(name='Dominican Republic', bg='blue', fg1='red', fg2='white', text='white'),
     'COD': CS(name='Zaire', bg='blue', fg1='red', fg2='yellow', text='yellow'),
     'DDR': CS(name='East Germany', bg='black', fg1='red', fg2='yellow', text='grey'),
+    'ECU': CS(name='Ecuador', bg='blue', fg1='red', fg2='yellow', text='black'),
     'EGY': CS(name='Egypt', bg='red', fg1='white', fg2='black', text='black'),
     'ENG': CS(name='England', bg='red', fg1='white', fg2='white', text='white'),
     'EST': CS(name='Estonia', bg='cyan', fg1='black', fg2='white', text='black'),
     'ETH': CS(name='Ethiopia', bg='blue', fg1='green', fg2='red', text='yellow'),
+    'FRO': CS(name='Faroe Islands', bg='white', fg1='blue', fg2='blue', text='red'),
     'FIN': CS(name='Finland', bg='white', fg1='blue', fg2='blue', text='blue'),
     'FRA': CS(name='France', bg='blue', fg1='red', fg2='white', text='white'),
     'GEO': CS(name='Georgia', bg='white', fg1='red', fg2='red', text='red'),
@@ -209,6 +212,7 @@ schemes = {
     'ROU': CS(name='Romania', bg='blue', fg1='red', fg2='yellow', text='yellow'),
     'RUS': CS(name='Russia', bg='blue', fg1='red', fg2='white', text='white'),
     'SMR': CS(name='San Marino', bg='cyan', fg1='white', fg2='white', text='white'),
+    'STP': CS(name='São Tomé and Príncipe', bg='green', fg1='red', fg2='yellow', text='black'),
     'SCT': CS(name='Scotland', bg='blue', fg1='white', fg2='white', text='white'),
     'SCG': CS(name='Serbia and Montenegro', bg='blue', fg1='red', fg2='white', text='white'),
     'SLV': CS(name="El Salvador", bg='blue', fg1='white', fg2='white', text='yellow'),

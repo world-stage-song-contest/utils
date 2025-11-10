@@ -60,12 +60,10 @@ def setup_args() -> argparse.ArgumentParser:
 
     parser.add_argument("csv", type=Path, help="CSV file with video metadata")
     parser.add_argument("--tmp", type=Path, default="temp", help="Temporary directory for clips and cards")
-    parser.add_argument("--common", type=Path, default="common", help="Common directory for shared resources")
-    parser.add_argument("--postcards", type=Path, default="postcards.csv", help="File with postcard video links")
-    parser.add_argument("--style", required=True, help="Style to use for the cards")
+    parser.add_argument("--style", default="70s", help="Style to use for the cards")
     parser.add_argument("--browser", default=None, help="Browser to use for downloads")
     parser.add_argument("--po-token", default="", help="PO token for YouTube downloads")
-    parser.add_argument("--size", default="1920x1080", type=common.parse_size, help="Output video size WxH")
+    parser.add_argument("--size", default="1280x720", type=common.parse_size, help="Output video size WxH")
     parser.add_argument("--fps", type=int, default=60, help="Output video FPS")
     parser.add_argument("--fade-duration", type=float, default=0.25, help="Fade duration in seconds")
     parser.add_argument("--output", type=Path, default="output", help="Output video file name")
@@ -78,7 +76,6 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--inkscape", default="inkscape", help="Path to the inkscape executable")
     parser.add_argument("--yt-dlp", default="yt-dlp", help="Path to the yt-dlp executable")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="Path to the ffmpeg executable")
-    parser.add_argument("--thumb", type=Path, help="Thumbnail background image")
     parser.add_argument("--flags", type=Path, help="Directory that contains flags")
 
     return parser

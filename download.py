@@ -243,7 +243,7 @@ def create_filename(row: Data, path: Path) -> Path:
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 
-def download_many(data: list[Data], args: common.Args) -> list[tuple[int, str, str, Path]]:
+def download_many(data: list[Data], args: common.Args) -> list[tuple[int, str, str, str, Path]]:
     ret = []
     this = data[0]
     source = get_known_name_path(this.video_link, this, args)
@@ -251,16 +251,16 @@ def download_many(data: list[Data], args: common.Args) -> list[tuple[int, str, s
         for d in data:
             name = create_filename(d, args.vidsdir)
             postprocess_clip(source, name, d, args, unlink=False)
-            ret.append((d.year, d.show, d.country, name))
+            ret.append((d.year, d.show, d.country, d.ro, name))
         return ret
 
     name = create_filename(this, args.vidsdir)
     master = download_video(this, name, args)
-    ret.append((this.year, this.show, this.country, master))
+    ret.append((this.year, this.show, this.country, this.ro, master))
     for row in data[1:]:
         new_name = create_filename(row, args.vidsdir)
         p = link_existing_clip(master, new_name)
-        ret.append((row.year, row.show, row.country, p))
+        ret.append((row.year, row.show, row.country, row.ro, p))
     return ret
 
 def main(args: common.Args) -> common.Clips:
@@ -306,7 +306,7 @@ def main(args: common.Args) -> common.Clips:
 
     if args.multiprocessing:
         clips = [x
-            for xs in mp.Pool(mp.cpu_count()).starmap(
+            for xs in mp.Pool(mp.cpu_count() - 2).starmap(
                 download_many,
                 [(v, args) for v in data.values()]
             )
@@ -321,7 +321,7 @@ def main(args: common.Args) -> common.Clips:
 
     print(f"[dl] Processed {sz} clips in {end1 - start1:.2f} seconds", file=common.OUT_HANDLE)
 
-    for year, show, country, path in clips:
-        ret[(year, show)][country] = path
+    for year, show, country, ro, path in clips:
+        ret[(year, show, ro)][country] = path
 
     return ret

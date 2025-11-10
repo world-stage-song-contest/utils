@@ -24,7 +24,7 @@ class Data:
     snippet_end: float
     type: str
 
-    def make_straight(self):
+    def make_straight(self, start2: float | None, end2: float | None):
         return Data(
             ro=self.ro,
             year=self.year,
@@ -33,8 +33,8 @@ class Data:
             artist=self.artist,
             title=self.title,
             path=self.path,
-            snippet_start=self.snippet_start,
-            snippet_end=self.snippet_start + 10,
+            snippet_start=start2 if start2 is not None and start2 >= 0 else self.snippet_start,
+            snippet_end=end2 if end2 is not None and end2 >= 0 else self.snippet_end,
             type='s'
         )
 
@@ -168,6 +168,16 @@ def process_row(row: Data, srcd: Path, cardsd: Path, clipsd: Path, args: common.
     process_clip(out_clip, src, overlay, s0, s1, args)
     return ((row.year, row.show), out_clip)
 
+def parse_seconds(td: str | None) -> int | None:
+    """Parse a string in the format M:SS into seconds."""
+    if not td:
+        return None
+    parts = list(map(int, td.strip().split(':')))
+    if len(parts) == 2:
+        return parts[0] * 60 + parts[1]
+    else:
+        return int(td)
+
 def main(all_clips: common.Clips, args: common.Args) -> dict[tuple[int, str], list[Path]]:
     ret = defaultdict(list)
     data: dict[tuple[int, str], list[Data]] = defaultdict(list)
@@ -188,7 +198,9 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[tuple[int, str], li
             year = int(row["year"].strip())
             show = row["show"].strip()
             country=row["country"].strip()
-            path = all_clips[(year, show)][country]
+            path = all_clips[(year, show, ro)][country]
+            ss1 = float(parse_seconds(row["snippet_start"]) or '50')
+            se1 = float(parse_seconds(row["snippet_end"]) or '70')
             val = Data(
                 ro=ro,
                 country=country,
@@ -196,19 +208,18 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[tuple[int, str], li
                 show=show,
                 artist=row["artist"].strip(),
                 title=row["title"].strip(),
-                snippet_start=float(row["snippet_start"].strip() or '0'),
-                snippet_end=float(row["snippet_end"].strip() or '0'),
+                snippet_start=float(ss1),
+                snippet_end=float(se1),
                 path=path,
                 type='r'
             )
 
-            if val.snippet_end == 0 and val.snippet_start == 0:
-                val.snippet_start = 50.0
-                val.snippet_end = 70.0
-
             rdata[(year, show)].append(val)
 
-            data[(year, show)].append(val.make_straight())
+            data[(year, show)].append(val.make_straight(
+                float(parse_seconds(row.get("snippet2_start", '')) or ss1),
+                float(parse_seconds(row.get("snippet2_end", '')) or (se1 - 10))))
+
     sz = len(data)
 
     args.tmpdir.mkdir(parents=True, exist_ok=True)
@@ -221,14 +232,14 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[tuple[int, str], li
     temp_clips = []
     clips_dir = args.tmpdir / "clips"
     if args.multiprocessing:
-        temp_clips = mp.Pool(mp.cpu_count()).starmap(
+        temp_clips = mp.Pool(mp.cpu_count() - 2).starmap(
             process_row,
             [(v, args.vidsdir, args.cardsdir, clips_dir, args) for row in data.values() for v in row]
         )
         for key, clip in temp_clips:
             clips[key].append(clip)
 
-        temp_clips = mp.Pool(mp.cpu_count()).starmap(
+        temp_clips = mp.Pool(mp.cpu_count() - 2).starmap(
             process_row,
             [(v, args.vidsdir, args.cardsdir, clips_dir, args) for row in rdata.values() for v in row]
         )
@@ -254,7 +265,7 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[tuple[int, str], li
     args.output.mkdir(parents=True, exist_ok=True)
     scratch.mkdir(parents=True, exist_ok=True)
     for key, clip_list in clips.items():
-        sn = common.show_name_map[key[1]]
+        sn = common.show_name_map.get(key[1], 'NF')
         vs = data[key]
         output = args.output / f"{key[0]}{key[1]}s.mov"
         if not output.exists() and args.straight:
@@ -267,7 +278,7 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[tuple[int, str], li
             print(f"[recap] {output} exists, skipping", file=common.OUT_HANDLE)
 
     for key, clip_list in rclips.items():
-        sn = common.show_name_map[key[1]]
+        sn = common.show_name_map.get(key[1], 'NF')
         vs = rdata[key]
         output = args.output / f"{key[0]}{key[1]}s.mov"
         rev_output = output.with_stem(f"{key[0]}{key[1]}")
@@ -282,10 +293,10 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[tuple[int, str], li
             print(f"[recap] {rev_output} exists, skipping", file=common.OUT_HANDLE)
 
     if args.multiprocessing:
-        vals = mp.Pool(mp.cpu_count()).starmap(
+        vals = mp.Pool(mp.cpu_count() - 2).starmap(
             concat, values
         )
-        vals = mp.Pool(mp.cpu_count()).starmap(
+        vals = mp.Pool(mp.cpu_count() - 2).starmap(
             concat, rvalues
         )
     else:

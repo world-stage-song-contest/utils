@@ -50,17 +50,14 @@ def youtube_id(url: str) -> str:
         raise ValueError(f"Cannot parse YouTube id from: {url}")
     return m.group(1)
 
-def is_single_frame(path: Path) -> bool:
-    p = common.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
+def is_single_frame(path: Path, args: common.Args) -> bool:
+    p = common.run([args.ffprobe, "-v", "error", "-count_frames", "-select_streams", "v:0",
              "-show_entries", "stream=nb_read_frames",
              "-of", "default=nokey=1:noprint_wrappers=1", str(path)])
     return p.stdout.strip() == "1"
 
-def detect_colour_format(path: Path) -> tuple[str, str]:
-    """ffprobe -v 0 -select_streams v:0 -show_entries \
-        stream=pix_fmt,color_range -of csv=p=0 "$f"""
-
-    p = common.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+def detect_colour_format(path: Path, args: common.Args) -> tuple[str, str]:
+    p = common.run([args.ffprobe, "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=pix_fmt,color_range",
              "-of", "csv=p=0", str(path)])
     try:
@@ -69,8 +66,8 @@ def detect_colour_format(path: Path) -> tuple[str, str]:
     except ValueError:
         raise RuntimeError(f"Cannot parse colour format from: {path}")
 
-def clip_duration(path: Path) -> float:
-    p = common.run(["ffprobe", "-v", "error", "-select_streams", "a:0",
+def clip_duration(path: Path, args: common.Args) -> float:
+    p = common.run([args.ffprobe, "-v", "error", "-select_streams", "a:0",
              "-show_entries", "stream=duration",
              "-of", "default=nw=1:nk=1", str(path)])
     try:
@@ -137,10 +134,10 @@ def process_single_frame(clip: Path, result: Path, args: common.Args) -> None:
 
 def postprocess_clip(clip: Path, out: Path, data: Data, args: common.Args, *, unlink: bool = False) -> None:
     result = out.with_suffix(".post.mp4")
-    if is_single_frame(clip):
+    if is_single_frame(clip, args):
         process_single_frame(clip, result, args)
     else:
-        pixel_format, colour_range = detect_colour_format(clip)
+        pixel_format, colour_range = detect_colour_format(clip, args)
         extra_vf = ""
         extra_flags = []
         if pixel_format == "yuvj420p" and colour_range == "pc":

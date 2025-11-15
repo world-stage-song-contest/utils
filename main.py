@@ -76,6 +76,7 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--inkscape", default="inkscape", help="Path to the inkscape executable")
     parser.add_argument("--yt-dlp", default="yt-dlp", help="Path to the yt-dlp executable")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="Path to the ffmpeg executable")
+    parser.add_argument("--ffprobe", default="ffprobe", help="Path to the ffprobe executable")
     parser.add_argument("--flags", type=Path, help="Directory that contains flags")
 
     return parser
@@ -103,6 +104,7 @@ def main() -> None:
         multiprocessing=args.multiprocessing,
         cleanup=args.cleanup,
         ffmpeg=args.ffmpeg,
+        ffprobe=args.ffprobe,
         inkscape=args.inkscape,
         yt_dlp=args.yt_dlp,
         straight=args.straight,

@@ -44,6 +44,7 @@ class Args:
     multiprocessing: bool
     cleanup: bool
     ffmpeg: str
+    ffprobe: str
     yt_dlp: str
     inkscape: str
     straight: bool

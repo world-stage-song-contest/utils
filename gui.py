@@ -52,6 +52,7 @@ class App(tk.Frame):
             multiprocessing=self.multiprocessing_var.get(),
             cleanup=self.cleanup_var.get(),
             ffmpeg=self.ffmpeg_path.get(),
+            ffprobe='',
             yt_dlp=self.yt_dlp_path.get(),
             inkscape=self.inkscape_path.get(),
             straight=self.straight_var.get(),

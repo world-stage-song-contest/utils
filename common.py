@@ -52,7 +52,6 @@ class Args:
     vidsdir: Path
     cardsdir: Path
     clipsdir: Path
-    flagsdir: Path
 
 @dataclass
 class CS:

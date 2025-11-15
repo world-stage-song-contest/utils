@@ -52,7 +52,7 @@ class App(tk.Frame):
             multiprocessing=self.multiprocessing_var.get(),
             cleanup=self.cleanup_var.get(),
             ffmpeg=self.ffmpeg_path.get(),
-            ffprobe='',
+            ffprobe=self.ffprobe_path.get(),
             yt_dlp=self.yt_dlp_path.get(),
             inkscape=self.inkscape_path.get(),
             straight=self.straight_var.get(),
@@ -60,7 +60,6 @@ class App(tk.Frame):
             vidsdir=tmpdir / "videos",
             cardsdir=tmpdir / "cards",
             clipsdir=tmpdir / "clips",
-            flagsdir=Path("flags"),
         )
         p = mp.Process(target=main.exec, args=(args,))
         p.start()
@@ -101,6 +100,11 @@ class App(tk.Frame):
         self.ffmpeg_entry = ttk.Entry(self, textvariable=self.ffmpeg_path)
         self.ffmpeg_entry.grid(column=1, row=self._row, sticky="ew")
         ttk.Button(self, text="...", command=lambda: self.pick_file(self.ffmpeg_path)).grid(column=2, row=self._row)
+        ttk.Label(self, text="FFprobe").grid(column=0, row=self.row(), sticky="e")
+        self.ffprobe_path = tk.StringVar(value="ffmpeg")
+        self.ffprobe_entry = ttk.Entry(self, textvariable=self.ffprobe_path)
+        self.ffprobe_entry.grid(column=1, row=self._row, sticky="ew")
+        ttk.Button(self, text="...", command=lambda: self.pick_file(self.ffprobe_path)).grid(column=2, row=self._row)
         ttk.Label(self, text="yt-dlp").grid(column=0, row=self.row(), sticky="e")
         self.yt_dlp_path = tk.StringVar(value="yt-dlp")
         self.yt_dlp_entry = ttk.Entry(self, textvariable=self.yt_dlp_path)

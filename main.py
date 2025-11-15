@@ -77,7 +77,6 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--yt-dlp", default="yt-dlp", help="Path to the yt-dlp executable")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="Path to the ffmpeg executable")
     parser.add_argument("--ffprobe", default="ffprobe", help="Path to the ffprobe executable")
-    parser.add_argument("--flags", type=Path, help="Directory that contains flags")
 
     return parser
 
@@ -109,7 +108,6 @@ def main() -> None:
         yt_dlp=args.yt_dlp,
         straight=args.straight,
         reverse=args.reverse,
-        flagsdir=args.flags,
     ))
 
 if __name__ == "__main__":

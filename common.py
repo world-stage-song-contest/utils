@@ -27,8 +27,8 @@ def run(cmd: list[str] | str, *, capture: bool = True) -> sp.CompletedProcess:
     except sp.CalledProcessError as e:
         raise RuntimeError(f"\n[cmd] {' '.join(map(shlex.quote, cmd))}\n[stderr]\n{e.stderr or ''}") from None
 
-# year, country, ro
-Clips = dict[tuple[int, str, str], dict[str, Path]]
+# show, ro
+Clips = dict[tuple[str, str], dict[str, Path]]
 
 @dataclass
 class Args:
@@ -47,8 +47,8 @@ class Args:
     ffprobe: str
     yt_dlp: str
     inkscape: str
-    straight: bool
-    reverse: bool
+    only_straight: bool
+    only_reverse: bool
     vidsdir: Path
     cardsdir: Path
     clipsdir: Path

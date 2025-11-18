@@ -70,9 +70,8 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--multiprocessing", action='store_true', help="Use multiprocessing")
     parser.add_argument("--cleanup", action='store_true', help="Cleanup temporary files after processing")
     parser.add_argument("--straight", default=True, action="store_true", help="Create a straight recap")
-    parser.add_argument("--no-straight", action="store_false", dest="straight", help="Do not create a straight recap")
-    parser.add_argument("--reverse", default=True, action="store_true", help="Create a reverse recap")
-    parser.add_argument("--no-reverse", action="store_false", dest="reverse", help="Do not create a reverse recap")
+    parser.add_argument("--only-straight", action="store_true", dest="straight", help="Only create a straight recap")
+    parser.add_argument("--only-reverse", action="store_true", dest="reverse", help="Only create a reverse recap")
     parser.add_argument("--inkscape", default="inkscape", help="Path to the inkscape executable")
     parser.add_argument("--yt-dlp", default="yt-dlp", help="Path to the yt-dlp executable")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="Path to the ffmpeg executable")
@@ -87,6 +86,11 @@ def main() -> None:
         return
 
     args = setup_args().parse_args()
+
+    if args.reverse and args.straight:
+        print("--only-reverse and --only-straight parameters are mutually exclusive", file=sys.stderr)
+        sys.exit(2)
+
     exec(common.Args(
         csv=args.csv,
         style=args.style,
@@ -106,8 +110,8 @@ def main() -> None:
         ffprobe=args.ffprobe,
         inkscape=args.inkscape,
         yt_dlp=args.yt_dlp,
-        straight=args.straight,
-        reverse=args.reverse,
+        only_straight=args.straight,
+        only_reverse=args.reverse,
     ))
 
 if __name__ == "__main__":

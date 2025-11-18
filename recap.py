@@ -14,7 +14,6 @@ import common
 @dataclass
 class Data:
     ro: str
-    year: int
     show: str
     country: str
     artist: str
@@ -27,7 +26,6 @@ class Data:
     def make_straight(self, start2: float | None, end2: float | None):
         return Data(
             ro=self.ro,
-            year=self.year,
             show=self.show,
             country=self.country,
             artist=self.artist,
@@ -122,7 +120,7 @@ def make_chapter_data(data: List[Data], args: common.Args, out_: Path):
 
     out_.write_text(''.join(chapters), encoding='utf-8')
 
-def concat(clips: List[Path], metadata: Path, manifest: Path, out_: Path, ffmpeg: str, key: tuple[int, str], show_name: str) -> tuple[tuple[int, str], Path]:
+def concat(clips: List[Path], metadata: Path, manifest: Path, out_: Path, ffmpeg: str, key: str, show_name: str) -> tuple[str, Path]:
     manifest.write_text("\n".join(f"file '{c.absolute()}'" for c in clips), encoding='utf-8')
 
     temp_out = out_.with_suffix(".temp.mp4")
@@ -139,12 +137,12 @@ def concat(clips: List[Path], metadata: Path, manifest: Path, out_: Path, ffmpeg
 
     return (key, out_)
 
-def process_row(row: Data, srcd: Path, cardsd: Path, clipsd: Path, args: common.Args) -> tuple[tuple[int, str], Path]:
-    out_clip = clipsd / f"{row.year}" / row.show / row.type / f"{row.ro}_{row.country}.mp4"
+def process_row(row: Data, srcd: Path, cardsd: Path, clipsd: Path, args: common.Args) -> tuple[str, Path]:
+    out_clip = clipsd / row.show / row.type / f"{row.ro}_{row.country}.mp4"
     out_clip.parent.mkdir(parents=True, exist_ok=True)
     if out_clip.exists():
         print(f"[recap] {out_clip} already exists, skipping.", file=common.OUT_HANDLE)
-        return ((row.year, row.show), out_clip)
+        return (row.show, out_clip)
 
     snippet_end = row.snippet_end + args.fade_duration
 
@@ -156,7 +154,7 @@ def process_row(row: Data, srcd: Path, cardsd: Path, clipsd: Path, args: common.
     src = row.path
     if not src.exists(follow_symlinks=False):
         raise FileNotFoundError(f"Source video not found: {src}")
-    overlay = cardsd / f"{row.year}/{row.show}/{row.ro}_{row.country}.png"
+    overlay = cardsd / f"{row.show}/{row.ro}_{row.country}.png"
     if not overlay.exists():
         raise FileNotFoundError(f"Overlay card not found: {overlay}")
 
@@ -166,7 +164,7 @@ def process_row(row: Data, srcd: Path, cardsd: Path, clipsd: Path, args: common.
         raise RuntimeError(f"Snapping produced empty clip (order={row.ro}).")
 
     process_clip(out_clip, src, overlay, s0, s1, args)
-    return ((row.year, row.show), out_clip)
+    return (row.show, out_clip)
 
 def parse_seconds(td: str | None) -> int | None:
     """Parse a string in the format M:SS into seconds."""
@@ -178,10 +176,15 @@ def parse_seconds(td: str | None) -> int | None:
     else:
         return int(td)
 
-def main(all_clips: common.Clips, args: common.Args) -> dict[tuple[int, str], list[Path]]:
+def split_key(key: str) -> tuple[str, str]:
+    return key[0:5], key[5:]
+
+ClipData = tuple[list[Path], Path, Path, Path, str, str, str]
+
+def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
     ret = defaultdict(list)
-    data: dict[tuple[int, str], list[Data]] = defaultdict(list)
-    rdata: dict[tuple[int, str], list[Data]] = defaultdict(list)
+    data: dict[str, list[Data]] = defaultdict(list)
+    rdata: dict[str, list[Data]] = defaultdict(list)
     n = 0
     with args.csv.open(newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
@@ -195,16 +198,14 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[tuple[int, str], li
                 ro = f"{int(rro):02d}"
             except ValueError:
                 ro = rro
-            year = int(row["year"].strip())
             show = row["show"].strip()
             country=row["country"].strip()
-            path = all_clips[(year, show, ro)][country]
+            path = all_clips[(show, ro)][country]
             ss1 = float(parse_seconds(row["snippet_start"]) or '50')
             se1 = float(parse_seconds(row["snippet_end"]) or '70')
             val = Data(
                 ro=ro,
                 country=country,
-                year=year,
                 show=show,
                 artist=row["artist"].strip(),
                 title=row["title"].strip(),
@@ -214,97 +215,98 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[tuple[int, str], li
                 type='r'
             )
 
-            rdata[(year, show)].append(val)
+            rdata[show].append(val)
 
-            data[(year, show)].append(val.make_straight(
+            data[show].append(val.make_straight(
                 float(parse_seconds(row.get("snippet2_start", '')) or ss1),
-                float(parse_seconds(row.get("snippet2_end", '')) or (se1 - 10))))
+                float(parse_seconds(row.get("snippet2_end", '')) or (ss1 + 10))))
 
     sz = len(data)
 
     args.tmpdir.mkdir(parents=True, exist_ok=True)
-    clips: dict[tuple[int, str], list[Path]] = defaultdict(list)
-    rclips: dict[tuple[int, str], list[Path]] = defaultdict(list)
+
+    rclips: dict[str, list[Path]] = defaultdict(list)
 
     print(f"Processing {sz} clips...", file=common.OUT_HANDLE)
     start1 = time.time()
 
-    temp_clips = []
     clips_dir = args.tmpdir / "clips"
-    if args.multiprocessing:
-        temp_clips = mp.Pool(mp.cpu_count() - 2).starmap(
-            process_row,
-            [(v, args.vidsdir, args.cardsdir, clips_dir, args) for row in data.values() for v in row]
+
+    def process_rows(rows: dict[str, list[Data]]) -> dict[str, list[Path]]:
+        clips: dict[str, list[Path]] = defaultdict(list)
+        items = (
+            (v, args.vidsdir, args.cardsdir, clips_dir, args)
+            for row in rows.values()
+            for v in row
         )
-        for key, clip in temp_clips:
+
+        if args.multiprocessing:
+            with mp.Pool(mp.cpu_count() - 2) as pool:
+                results = pool.starmap(process_row, items)
+        else:
+            results = [process_row(*item) for item in items]
+
+        for key, clip in results:
             clips[key].append(clip)
 
-        temp_clips = mp.Pool(mp.cpu_count() - 2).starmap(
-            process_row,
-            [(v, args.vidsdir, args.cardsdir, clips_dir, args) for row in rdata.values() for v in row]
-        )
-        for key, clip in temp_clips:
-            rclips[key].append(clip)
-    else:
-        for vs in data.values():
-            for v in vs:
-                key, clip = process_row(v, args.vidsdir, args.cardsdir, clips_dir, args)
-                clips[key].append(clip)
-        for vs in rdata.values():
-            for v in vs:
-                key, clip = process_row(v, args.vidsdir, args.cardsdir, clips_dir, args)
-                rclips[key].append(clip)
+        return clips
+
+    if not args.only_reverse:
+        clips = process_rows(data)
+
+    if not args.only_straight:
+        rclips = process_rows(rdata)
 
     end1 = time.time()
 
     print(f"Concatenating clips...", file=common.OUT_HANDLE)
-    values = []
-    rvalues = []
     start2 = time.time()
     scratch = args.tmpdir / "metadata"
     args.output.mkdir(parents=True, exist_ok=True)
     scratch.mkdir(parents=True, exist_ok=True)
-    for key, clip_list in clips.items():
-        sn = common.show_name_map.get(key[1], 'NF')
-        vs = data[key]
-        output = args.output / f"{key[0]}{key[1]}s.mov"
-        if not output.exists() and args.straight:
-            manifest = scratch / output.with_suffix(".manifest.txt").name
-            metadata = scratch / output.with_suffix(".meta.txt").name
-            make_chapter_data(vs, args, metadata)
-            show_name = f"{key[0]} {sn} Direct Recap"
-            values.append((clip_list, metadata, manifest, output, args.ffmpeg, key, show_name))
-        else:
-            print(f"[recap] {output} exists, skipping", file=common.OUT_HANDLE)
 
-    for key, clip_list in rclips.items():
-        sn = common.show_name_map.get(key[1], 'NF')
-        vs = rdata[key]
-        output = args.output / f"{key[0]}{key[1]}s.mov"
-        rev_output = output.with_stem(f"{key[0]}{key[1]}")
-        if not rev_output.exists() and args.reverse:
-            rev_list = list(reversed(clip_list))
-            rev_manifest = scratch / rev_output.with_suffix(".manifest.txt").name
-            rev_metadata = scratch / rev_output.with_suffix(".meta.txt").name
-            make_chapter_data(list(reversed(vs)), args, rev_metadata)
-            show_name = f"{key[0]} {sn} Recap"
-            rvalues.append((rev_list, rev_metadata, rev_manifest, rev_output, args.ffmpeg, key, show_name))
-        else:
-            print(f"[recap] {rev_output} exists, skipping", file=common.OUT_HANDLE)
+    def process_clips(clips: dict[str, list[Path]]) -> list[ClipData]:
+        values = []
 
-    if args.multiprocessing:
-        vals = mp.Pool(mp.cpu_count() - 2).starmap(
-            concat, values
-        )
-        vals = mp.Pool(mp.cpu_count() - 2).starmap(
-            concat, rvalues
-        )
-    else:
-        vals = []
-        for vss in values:
-            vals.append(concat(*vss))
-        for vss in rvalues:
-            vals.append(concat(*vss))
+        for key, clip_list in clips.items():
+            yr, sh = split_key(key)
+            sn = common.show_name_map.get(sh, 'NF')
+            vs = data[key]
+            output = args.output / f"{key}s.mov"
+            if not output.exists():
+                manifest = scratch / output.with_suffix(".manifest.txt").name
+                metadata = scratch / output.with_suffix(".meta.txt").name
+                make_chapter_data(vs, args, metadata)
+                show_name = f"{yr} {sn} Direct Recap"
+                values.append((clip_list, metadata, manifest, output, args.ffmpeg, key, show_name))
+            else:
+                print(f"[recap] {output} exists, skipping", file=common.OUT_HANDLE)
+
+        return values
+
+    if not args.only_reverse:
+        values = process_clips(clips) # type: ignore
+
+    if not args.only_straight:
+        rvalues = process_clips(rclips)
+
+    def concat_clips(values: list[ClipData]) -> list[tuple[str, Path]]:
+        if args.multiprocessing:
+            return mp.Pool(mp.cpu_count() - 2).starmap(
+                concat, values
+            )
+        else:
+            vals = []
+            for vss in values:
+                vals.append(concat(*vss))
+            return vals
+
+    vals = []
+    if not args.only_reverse:
+        vals.extend(concat_clips(values)) # type: ignore
+
+    if not args.only_straight:
+        vals.extend(concat_clips(rvalues)) # type: ignore
 
     end2 = time.time()
     print(f"Processed {sz} shows and {n} clips in {end1 - start1:.2f} seconds", file=common.OUT_HANDLE)

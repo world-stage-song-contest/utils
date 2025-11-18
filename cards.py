@@ -9,23 +9,21 @@ import common
 import svg
 
 @dataclass
-class V:
-    year: int
+class Data:
     show: str
     country: str
+    country_name: str
     artist: str
     title: str
     ro: str
-    display_name: str
 
-    def __init__(self, year: int, show: str, country: str, artist: str, title: str, ro: str, display_name: str | None = None):
-        self.year = year
+    def __init__(self, show: str, country: str, country_name: str, artist: str, title: str, ro: str):
         self.show = show
         self.country = country
+        self.country_name = country_name
         self.artist = artist
         self.title = title
         self.ro = ro
-        self.display_name = display_name or (common.schemes[country].name if country != 'XXX' else '')
 
 OFFSET = 25
 MARGIN = 12
@@ -42,7 +40,7 @@ def convert_svg_to_png(svg_path: Path, png_path: Path, inkscape: str) -> None:
     common.run(cmd, capture=False)
 
 def make_70s_entry_svg(d: ET.Element, width: int, height: int, card_height: int,
-                       v: V, scheme: common.CS) -> ET.Element:
+                       v: Data, scheme: common.CS) -> ET.Element:
     m = common.colours["70s"]
     y_off = height - card_height
     c1_diameter = card_height - 2 * MARGIN
@@ -64,7 +62,7 @@ def make_70s_entry_svg(d: ET.Element, width: int, height: int, card_height: int,
                         font_family=FONT_FAMILY)
     d.append(ro_text)
 
-    country_text = svg.text(v.display_name, 60, line_offset + OFFSET, card_height // 2 + 70 + y_off,
+    country_text = svg.text(v.country_name, 60, line_offset + OFFSET, card_height // 2 + 70 + y_off,
                              fill=m[scheme.text], font_family=FONT_FAMILY)
     d.append(country_text)
 
@@ -82,7 +80,7 @@ entry_functions = {
     "70s": make_70s_entry_svg,
 }
 
-def read_input(path: Path) -> list[V]:
+def read_input(path: Path) -> list[Data]:
     shows = []
     with path.open(newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
@@ -95,27 +93,26 @@ def read_input(path: Path) -> list[V]:
                 ro = f"{int(rro):02d}"
             except ValueError:
                 ro = rro
-            year = int(row["year"])
             show = row["show"]
             ro = ro
             country = row["country"]
+            country_name = row["country_name"]
             artist = row["artist"]
             title = row["title"]
-            display_name = row["display_name"]
-            shows.append(V(year, show, country, artist, title, ro, display_name))
+            shows.append(Data(show, country, country_name, artist, title, ro))
     return shows
 
 width, height = 1980, 1080
 
-def process_entry(v: V, img_width: int, img_height: int, style: str, outdir: Path, inkscape: str) -> None:
-    base_name = f"{v.year}/{v.show}/{v.ro}_{v.country}"
+def process_entry(v: Data, img_width: int, img_height: int, style: str, outdir: Path, inkscape: str) -> None:
+    base_name = f"{v.show}/{v.ro}_{v.country}"
     svg_path = outdir / "svg" / f"{base_name}.svg"
     svg_path.parent.mkdir(parents=True, exist_ok=True)
     png_path = outdir / f"{base_name}.png"
     if png_path.exists():
         print(f"[cards] {png_path} already exists, skipping.", file=common.OUT_HANDLE)
         return
-    print(f"[cards] Processing {v.ro:02} {v.country} ({v.year} {v.show})", file=common.OUT_HANDLE)
+    print(f"[cards] Processing {v.ro:02} {v.country} ({v.show})", file=common.OUT_HANDLE)
     d = svg.svg(img_width * 0.925, img_height * 0.925, width, height, origin="top-left")
 
     if v.country != 'XXX':
@@ -127,7 +124,7 @@ def process_entry(v: V, img_width: int, img_height: int, style: str, outdir: Pat
     svg.save(d, svg_path)
     convert_svg_to_png(svg_path, png_path, inkscape)
 
-def make_svgs(data: list[V], size: tuple[int, int], style: str, outdir: Path, multi: bool, inkscape: str) -> None:
+def make_svgs(data: list[Data], size: tuple[int, int], style: str, outdir: Path, multi: bool, inkscape: str) -> None:
     if multi:
         with mp.Pool(mp.cpu_count() - 2) as pool:
             pool.starmap(process_entry, [(v, size[0], size[1], style, outdir, inkscape) for v in data])

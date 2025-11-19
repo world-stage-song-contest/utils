@@ -199,7 +199,7 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
             except ValueError:
                 ro = rro
             show = row["show"].strip()
-            country=row["country"].strip()
+            country=row["country"].strip().upper()
             path = all_clips[(show, ro)][country]
             ss1 = float(parse_seconds(row["snippet_start"]) or '50')
             se1 = float(parse_seconds(row["snippet_end"]) or '70')
@@ -265,14 +265,14 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
     args.output.mkdir(parents=True, exist_ok=True)
     scratch.mkdir(parents=True, exist_ok=True)
 
-    def process_clips(clips: dict[str, list[Path]]) -> list[ClipData]:
+    def process_clips(clips: dict[str, list[Path]], suffix: str) -> list[ClipData]:
         values = []
 
         for key, clip_list in clips.items():
             yr, sh = split_key(key)
             sn = common.show_name_map.get(sh, 'NF')
             vs = data[key]
-            output = args.output / f"{key}s.mov"
+            output = args.output / f"{key}{suffix}.mov"
             if not output.exists():
                 manifest = scratch / output.with_suffix(".manifest.txt").name
                 metadata = scratch / output.with_suffix(".meta.txt").name
@@ -285,10 +285,10 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
         return values
 
     if not args.only_reverse:
-        values = process_clips(clips) # type: ignore
+        values = process_clips(clips, 's') # type: ignore
 
     if not args.only_straight:
-        rvalues = process_clips(rclips)
+        rvalues = process_clips(rclips, '')
 
     def concat_clips(values: list[ClipData]) -> list[tuple[str, Path]]:
         if args.multiprocessing:

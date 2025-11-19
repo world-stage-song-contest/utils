@@ -16,8 +16,6 @@ class Data:
     ro: str
     show: str
     country: str
-    country_name: str
-    cc: str
     video_link: str
     artist: str
     title: str
@@ -27,8 +25,6 @@ class Data:
             ro=self.ro,
             show=self.show,
             country=self.country,
-            cc=self.cc,
-            country_name=self.country_name,
             video_link=self.video_link,
             artist=self.artist,
             title=self.title,
@@ -259,12 +255,10 @@ def main(args: common.Args) -> common.Clips:
             val = Data(
                 ro=ro,
                 show=row["show"].strip(),
-                country=row["country"].strip(),
-                cc=row["country_code"].strip(),
                 video_link=video_link,
                 artist=row["artist"].strip(),
                 title=row["title"].strip(),
-                country_name=row["country_name"].strip(),
+                country=row["country"].strip().upper(),
             )
 
             data[video_link].append(val)

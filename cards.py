@@ -95,10 +95,10 @@ def read_input(path: Path) -> list[Data]:
                 ro = rro
             show = row["show"]
             ro = ro
-            country = row["country"]
-            country_name = row["country_name"]
-            artist = row["artist"]
-            title = row["title"]
+            country = row["country"].strip().upper()
+            country_name = row["country_name"].strip()
+            artist = row["artist"].strip()
+            title = row["title"].strip()
             shows.append(Data(show, country, country_name, artist, title, ro))
     return shows
 

@@ -111,17 +111,26 @@ END={end * 1000:.0f}
 title={common.schemes[data.country].name}: {data.artist} - {data.title}
 """
 
-def make_chapter_data(data: List[Data], args: common.Args, out_: Path):
+def make_chapter_data(data: List[Data], args: common.Args, out_: Path, reverse: bool):
     prev_duration = 1.0
     chapters = [';FFMETADATA1\n']
+    values = []
     for d in data:
-        chapters.append(make_country_data(d, prev_duration, args.fade_duration))
+        values.append(make_country_data(d, prev_duration, args.fade_duration))
         prev_duration += int(d.snippet_end - d.snippet_start) + args.fade_duration * 2
+
+    if reverse:
+        values.reverse()
+
+    chapters.extend(values)
 
     out_.write_text(''.join(chapters), encoding='utf-8')
 
-def concat(clips: List[Path], metadata: Path, manifest: Path, out_: Path, ffmpeg: str, key: str, show_name: str) -> tuple[str, Path]:
-    manifest.write_text("\n".join(f"file '{c.absolute()}'" for c in clips), encoding='utf-8')
+def concat(clips: List[Path], metadata: Path, manifest: Path, out_: Path, ffmpeg: str, key: str, show_name: str, reverse: bool) -> tuple[str, Path]:
+    if reverse:
+        manifest.write_text("\n".join(f"file '{c.absolute()}'" for c in reversed(clips)), encoding='utf-8')
+    else:
+        manifest.write_text("\n".join(f"file '{c.absolute()}'" for c in clips), encoding='utf-8')
 
     temp_out = out_.with_suffix(".temp.mp4")
     common.run([ffmpeg,
@@ -179,7 +188,7 @@ def parse_seconds(td: str | None) -> int | None:
 def split_key(key: str) -> tuple[str, str]:
     return key[0:5], key[5:]
 
-ClipData = tuple[list[Path], Path, Path, Path, str, str, str]
+ClipData = tuple[list[Path], Path, Path, Path, str, str, str, bool]
 
 def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
     ret = defaultdict(list)
@@ -225,8 +234,6 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
 
     args.tmpdir.mkdir(parents=True, exist_ok=True)
 
-    rclips: dict[str, list[Path]] = defaultdict(list)
-
     print(f"Processing {sz} clips...", file=common.OUT_HANDLE)
     start1 = time.time()
 
@@ -265,8 +272,11 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
     args.output.mkdir(parents=True, exist_ok=True)
     scratch.mkdir(parents=True, exist_ok=True)
 
-    def process_clips(clips: dict[str, list[Path]], suffix: str) -> list[ClipData]:
+    def process_clips(clips: dict[str, list[Path]], reverse: bool) -> list[ClipData]:
         values = []
+        suffix = ''
+        if not reverse:
+            suffix = 's'
 
         for key, clip_list in clips.items():
             yr, sh = split_key(key)
@@ -276,19 +286,19 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
             if not output.exists():
                 manifest = scratch / output.with_suffix(".manifest.txt").name
                 metadata = scratch / output.with_suffix(".meta.txt").name
-                make_chapter_data(vs, args, metadata)
+                make_chapter_data(vs, args, metadata, reverse)
                 show_name = f"{yr} {sn} Direct Recap"
-                values.append((clip_list, metadata, manifest, output, args.ffmpeg, key, show_name))
+                values.append((clip_list, metadata, manifest, output, args.ffmpeg, key, show_name, reverse))
             else:
                 print(f"[recap] {output} exists, skipping", file=common.OUT_HANDLE)
 
         return values
 
     if not args.only_reverse:
-        values = process_clips(clips, 's') # type: ignore
+        values = process_clips(clips, reverse=False) # type: ignore
 
     if not args.only_straight:
-        rvalues = process_clips(rclips, '')
+        rvalues = process_clips(rclips, reverse=True) # type: ignore
 
     def concat_clips(values: list[ClipData]) -> list[tuple[str, Path]]:
         if args.multiprocessing:

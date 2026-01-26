@@ -270,7 +270,7 @@ def main(args: common.Args) -> common.Clips:
 
     if args.multiprocessing:
         clips = [x
-            for xs in mp.Pool(mp.cpu_count() - 2).starmap(
+            for xs in mp.Pool(mp.cpu_count()//2).starmap(
                 download_many,
                 [(v, args) for v in data.values()]
             )

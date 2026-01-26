@@ -27,7 +27,8 @@ class Data:
 
 OFFSET = 25
 MARGIN = 12
-FONT_FAMILY = "Eurostile Next LT Pro"
+FONT_FAMILY_1 = "Aptos Display"
+FONT_FAMILY_2 = "Compacta"
 
 def convert_svg_to_png(svg_path: Path, png_path: Path, inkscape: str) -> None:
     png_path.parent.mkdir(parents=True, exist_ok=True)
@@ -59,19 +60,19 @@ def make_70s_entry_svg(d: ET.Element, width: int, height: int, card_height: int,
     ro_text = svg.text(f"{v.ro}", 120, card_height // 2 + OFFSET, card_height // 2 + y_off + 15,
                         fill=m[scheme.text], text_anchor="middle", dominant_baseline="middle",
                         alignment_baseline="middle", text_align="center",
-                        font_family=FONT_FAMILY)
+                        font_family=FONT_FAMILY_2)
     d.append(ro_text)
 
     country_text = svg.text(v.country_name, 60, line_offset + OFFSET, card_height // 2 + 70 + y_off,
-                             fill=m[scheme.text], font_family=FONT_FAMILY)
+                             fill=m[scheme.text], font_family=FONT_FAMILY_1)
     d.append(country_text)
 
     artist_text = svg.text(v.artist, 40, line_offset + OFFSET, card_height // 2 - 75 + y_off,
-                            fill=m[scheme.text], font_family=FONT_FAMILY)
+                            fill=m[scheme.text], font_family=FONT_FAMILY_1)
     d.append(artist_text)
 
     title_text = svg.text(v.title, 40, line_offset + OFFSET, card_height // 2 - 70 + 45 + y_off,
-                           fill=m[scheme.text], font_weight="bold", font_family=FONT_FAMILY)
+                           fill=m[scheme.text], font_weight="bold", font_family=FONT_FAMILY_1)
     d.append(title_text)
 
     return d
@@ -126,7 +127,7 @@ def process_entry(v: Data, img_width: int, img_height: int, style: str, outdir: 
 
 def make_svgs(data: list[Data], size: tuple[int, int], style: str, outdir: Path, multi: bool, inkscape: str) -> None:
     if multi:
-        with mp.Pool(mp.cpu_count() - 2) as pool:
+        with mp.Pool(mp.cpu_count()//2) as pool:
             pool.starmap(process_entry, [(v, size[0], size[1], style, outdir, inkscape) for v in data])
     else:
         for v in data:

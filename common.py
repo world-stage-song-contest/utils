@@ -184,6 +184,7 @@ schemes = {
     "MK": CS(name="North Macedonia", bg="red", fg1="yellow", fg2="yellow", text="yellow"),
     "NO": CS(name="Norway", bg="red", fg1="blue", fg2="white", text="white"),
     "PK": CS(name="Pakistan", bg="green", fg1="white", fg2="white", text="white"),
+    "PA": CS(name="Panama", bg="white", fg1="red", fg2="red", text="navy"),
     "PH": CS(name="Philippines", bg="blue", fg1="yellow", fg2="red", text="white"),
     "PE": CS(name="Peru", bg="red", fg1="white", fg2="white", text="white"),
     "PL": CS(name="Poland", bg="red", fg1="white", fg2="white", text="white"),

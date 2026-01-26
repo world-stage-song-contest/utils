@@ -114,15 +114,15 @@ title={common.schemes[data.country].name}: {data.artist} - {data.title}
 def make_chapter_data(data: List[Data], args: common.Args, out_: Path, reverse: bool):
     prev_duration = 1.0
     chapters = [';FFMETADATA1\n']
-    values = []
-    for d in data:
-        values.append(make_country_data(d, prev_duration, args.fade_duration))
-        prev_duration += int(d.snippet_end - d.snippet_start) + args.fade_duration * 2
 
     if reverse:
-        values.reverse()
-
-    chapters.extend(values)
+        for d in reversed(data):
+            chapters.append(make_country_data(d, prev_duration, args.fade_duration))
+            prev_duration += int(d.snippet_end - d.snippet_start) + args.fade_duration * 2
+    else:
+        for d in data:
+            chapters.append(make_country_data(d, prev_duration, args.fade_duration))
+            prev_duration += int(d.snippet_end - d.snippet_start) + args.fade_duration * 2
 
     out_.write_text(''.join(chapters), encoding='utf-8')
 
@@ -186,7 +186,7 @@ def parse_seconds(td: str | None) -> int | None:
         return int(td)
 
 def split_key(key: str) -> tuple[str, str]:
-    return key[0:5], key[5:]
+    return key[0:4], key[4:]
 
 ClipData = tuple[list[Path], Path, Path, Path, str, str, str, bool]
 
@@ -248,7 +248,7 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
         )
 
         if args.multiprocessing:
-            with mp.Pool(mp.cpu_count() - 2) as pool:
+            with mp.Pool(mp.cpu_count()//2) as pool:
                 results = pool.starmap(process_row, items)
         else:
             results = [process_row(*item) for item in items]
@@ -272,7 +272,7 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
     args.output.mkdir(parents=True, exist_ok=True)
     scratch.mkdir(parents=True, exist_ok=True)
 
-    def process_clips(clips: dict[str, list[Path]], reverse: bool) -> list[ClipData]:
+    def process_clips(clips: dict[str, list[Path]], data: dict[str, list[Data]], reverse: bool) -> list[ClipData]:
         values = []
         suffix = ''
         if not reverse:
@@ -295,14 +295,14 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
         return values
 
     if not args.only_reverse:
-        values = process_clips(clips, reverse=False) # type: ignore
+        values = process_clips(clips, data, reverse=False) # type: ignore
 
     if not args.only_straight:
-        rvalues = process_clips(rclips, reverse=True) # type: ignore
+        rvalues = process_clips(rclips, rdata, reverse=True) # type: ignore
 
     def concat_clips(values: list[ClipData]) -> list[tuple[str, Path]]:
         if args.multiprocessing:
-            return mp.Pool(mp.cpu_count() - 2).starmap(
+            return mp.Pool(mp.cpu_count()//2).starmap(
                 concat, values
             )
         else:

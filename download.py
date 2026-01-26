@@ -93,8 +93,11 @@ def build_vf(target_w: int, target_h: int, fps: int) -> str:
 def build_af(index: int) -> str:
     """
     loudnorm → optional afade-in/out   ==> label [a]
+	
+	This above has been removed, anull passes the input straight to the output without changes
+	— Liv
     """
-    chain = f"[{index}:a][a]"
+    chain = f"[{index}:a]anull[a]"
     return chain
 
 shared_flags = [

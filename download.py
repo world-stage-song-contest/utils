@@ -105,7 +105,7 @@ shared_flags = [
     "-color_trc", "bt709", "-colorspace", "bt709",
     "-c:v", "libsvtav1", "-preset", "6", "-svtav1-params", "crf=36:tune=0:film-grain=10",
     "-ac", "2", "-c:a", "libopus", "-b:a", "128k",
-    "-shortest", "-pix_fmt", "yuv420ple",
+    "-shortest", "-pix_fmt", "yuv420p10le",
     "-movflags", "+faststart", "-fflags", "+genpts",
     "-avoid_negative_ts", "make_zero",
     "-video_track_timescale", "90000",
@@ -138,7 +138,7 @@ def postprocess_clip(clip: Path, out: Path, data: Data, args: common.Args, *, un
         extra_vf = ""
         extra_flags = []
         if pixel_format == "yuvj420p" and colour_range == "pc":
-            extra_vf = "[v]zscale=in_range=pc:out_range=tv,format=yuv420ple[v]"
+            extra_vf = "[v]zscale=in_range=pc:out_range=tv,format=yuv420p10le[v]"
         else:
             extra_flags = [
 #                "-bsf:v", "h264_metadata=video_full_range_flag=0:"

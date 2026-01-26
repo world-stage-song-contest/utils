@@ -87,7 +87,7 @@ def build_vf(target_w: int, target_h: int, fps: int) -> str:
                 f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1[v]")
 
     # 3. constant fps + pixel format
-    filt.append(f"[v]fps=fps={fps},format=yuv420ple[v]")
+    filt.append(f"[v]fps=fps={fps},format=yuv420p10le[v]")
     return ";".join(filt)
 
 def build_af(index: int) -> str:

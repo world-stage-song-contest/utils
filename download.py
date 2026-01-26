@@ -150,8 +150,8 @@ def postprocess_clip(clip: Path, out: Path, data: Data, args: common.Args, *, un
         af = build_af(0)
         common.run([
             args.ffmpeg, "-hide_banner", "-y",
-            "-i", str(clip), "-filter_complex", f"{vf}{extra_vf};{af}",
-            "-map", "[v]", "-map", "[a]", "-r", str(args.fps),
+            "-i", str(clip), "-filter_complex", f"{vf}{extra_vf}",
+            "-map", "[v]", "-map", "0:a:0", "-r", str(args.fps),
              *extra_flags, *shared_flags,
             str(result)
         ])

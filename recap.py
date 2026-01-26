@@ -74,7 +74,7 @@ def build_af(dur: float, fade_dur: float) -> str:
     """
     loudnorm → optional afade-in/out   ==> label [a]
     """
-    chain = ("[0:a]"
+    chain = ("[0:a:0]"
              f"afade=t=in:st=0:d={fade_dur:.3f}"
              f",afade=t=out:st={dur-fade_dur:.3f}:d={fade_dur:.3f}[a]")
     return chain

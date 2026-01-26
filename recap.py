@@ -97,7 +97,7 @@ def process_clip(out_: Path, src: Path, overlay: Path,
         "-filter_complex", f"{vf};{af}",
         "-map", "[v]", "-map", "[a]", 
         "-c:v", "libsvtav1", "-preset", "5", "-pix_fmt", "yuv420p10le", "-svtav1-params", "crf=36:tune=0:film-grain=10",
-        "-ac", "2", "-c:a", "libopus", "-b:a", "96k", str(temp_out)
+        "-ac", "2", "-c:a", "libopus", "-b:a", "128k", str(temp_out)
     ])
 
     temp_out.rename(out_)

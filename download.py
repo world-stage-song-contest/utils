@@ -87,22 +87,22 @@ def build_vf(target_w: int, target_h: int, fps: int) -> str:
                 f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1[v]")
 
     # 3. constant fps + pixel format
-    filt.append(f"[v]fps=fps={fps},format=yuv420p[v]")
+    filt.append(f"[v]fps=fps={fps},format=yuv420ple[v]")
     return ";".join(filt)
 
 def build_af(index: int) -> str:
     """
     loudnorm → optional afade-in/out   ==> label [a]
     """
-    chain = f"[{index}:a]loudnorm=I=-14:TP=-1.5:LRA=11[a]"
+    chain = f"[{index}:a][a]"
     return chain
 
 shared_flags = [
     "-color_range", "tv", "-color_primaries", "bt709",
     "-color_trc", "bt709", "-colorspace", "bt709",
-    "-c:v", "libx264", "-tune", "stillimage", "-crf", "18",
-    "-ac", "2", "-c:a", "aac", "-b:a", "192k",
-    "-shortest", "-pix_fmt", "yuv420p",
+    "-c:v", "libsvtav1", "-preset", "6", "-svtav1-params", "crf=36:tune=0:film-grain=10",
+    "-ac", "2", "-c:a", "libopus", "-b:a", "128k",
+    "-shortest", "-pix_fmt", "yuv420ple",
     "-movflags", "+faststart", "-fflags", "+genpts",
     "-avoid_negative_ts", "make_zero",
     "-video_track_timescale", "90000",
@@ -135,12 +135,12 @@ def postprocess_clip(clip: Path, out: Path, data: Data, args: common.Args, *, un
         extra_vf = ""
         extra_flags = []
         if pixel_format == "yuvj420p" and colour_range == "pc":
-            extra_vf = "[v]zscale=in_range=pc:out_range=tv,format=yuv420p[v]"
+            extra_vf = "[v]zscale=in_range=pc:out_range=tv,format=yuv420ple[v]"
         else:
             extra_flags = [
-                "-bsf:v", "h264_metadata=video_full_range_flag=0:"
-                          "colour_primaries=1:transfer_characteristics=1:"
-                          "matrix_coefficients=1"
+#                "-bsf:v", "h264_metadata=video_full_range_flag=0:"
+#                          "colour_primaries=1:transfer_characteristics=1:"
+#                          "matrix_coefficients=1"
             ]
         w, h = args.size
         vf = build_vf(w, h, args.fps)

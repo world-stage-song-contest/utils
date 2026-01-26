@@ -67,15 +67,15 @@ def build_vf(target_w: int, target_h: int, fps: int,
     filt.append(f"[fi]fade=t=out:st={dur-fade_dur:.3f}:d={fade_dur:.3f}[fo]")
 
     # 5. constant fps + pixel format
-    filt.append(f"[fo]fps=fps={fps},format=yuv420p[v]")
+    filt.append(f"[fo]fps=fps={fps},format=yuv420p10le[v]")
     return ";".join(filt)
 
 def build_af(dur: float, fade_dur: float) -> str:
     """
     loudnorm → optional afade-in/out   ==> label [a]
     """
-    chain = ("[0:a]loudnorm=I=-14:TP=-1.5:LRA=11"
-             f",afade=t=in:st=0:d={fade_dur:.3f}"
+    chain = ("[0:a]"
+             f"afade=t=in:st=0:d={fade_dur:.3f}"
              f",afade=t=out:st={dur-fade_dur:.3f}:d={fade_dur:.3f}[a]")
     return chain
 
@@ -91,12 +91,13 @@ def process_clip(out_: Path, src: Path, overlay: Path,
     temp_out = out_.with_suffix(".temp.mp4")
     common.run([
         args.ffmpeg, "-hide_banner", "-y",
+		"-r", str(args.fps),
         "-ss", hms(start), "-to", hms(end),
         "-i", str(src), "-i", str(overlay),
         "-filter_complex", f"{vf};{af}",
-        "-map", "[v]", "-map", "[a]", "-r", str(args.fps),
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-ac", "2", "-c:a", "aac", "-b:a", "192k", str(temp_out)
+        "-map", "[v]", "-map", "[a]", 
+        "-c:v", "libsvtav1", "-preset", "5", "-pix_fmt", "yuv420p10le", "-svtav1-params", "crf=36:tune=0:film-grain=10",
+        "-ac", "2", "-c:a", "libopus", "-b:a", "96k", str(temp_out)
     ])
 
     temp_out.rename(out_)

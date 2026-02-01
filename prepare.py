@@ -257,7 +257,7 @@ cc_map = {
 class SongData:
     audio_path: Path
     output_directory: Path | None
-    image_type: str
+    image_type: str | None
     artist: str
     title: str
     language: str
@@ -268,7 +268,7 @@ class SongData:
 
         if not self.audio_path.exists():
             raise FileNotFoundError(self.audio_path)
-        if not self.image_path().exists():
+        if (p := self.image_path()) is not None and not p.exists():
             raise FileNotFoundError(self.image_path())
 
         # must look like wsYYYYcc.*
@@ -286,8 +286,11 @@ class SongData:
         else:
             return self.audio_path.with_suffix('.m4a')
 
-    def image_path(self) -> Path:
-        return self.audio_path.with_suffix(self.image_type)
+    def image_path(self) -> Path | None:
+        if self.image_type is not None:
+            return self.audio_path.with_suffix(self.image_type)
+
+        return None
 
     def base_name(self) -> str:
         return self.audio_path.stem
@@ -345,16 +348,25 @@ def run(cmd: list[str], capture: bool = False) -> sp.CompletedProcess:
 def setup_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare files for the CDN.")
 
-    parser.add_argument("audio_file", type=Path, help="The base name of the file in the format wsYEARcc.TYPE")
-    parser.add_argument("image_type", type=str, help="The format of the image, e.g., jpg, png, webp")
-    parser.add_argument("artist", type=str, help="The name of the song's artist")
-    parser.add_argument("title", type=str, help="The title of the song")
-    parser.add_argument("language", type=str, help="The language code of the song")
+    parser.add_argument("--dry-run", "-n", action="store_true", help="Only output the commands that will be run")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Do not print commands that are executed")
+    parser.add_argument("--overwrite", "-y", action="store_true", help="Overwrite files without asking")
+    parser.add_argument("--output-directory", "-o", type=Path, help="Output destination")
 
-    parser.add_argument("--dry-run", '-n', action='store_true', help="Only output the commands that will be run")
-    parser.add_argument("--quiet", '-q', action='store_true', help="Do not print commands that are executed")
-    parser.add_argument("--overwrite", '-y', action='store_true', help="Overwrite files without asking")
-    parser.add_argument("--output-directory", '-o', type=Path, action='store', help='Output destination')
+    subparsers = parser.add_subparsers(dest="mode", required=True)
+
+    audio = subparsers.add_parser("audio", help="Process an audio file with an associated image")
+    audio.add_argument("media_file", type=Path, help="Audio file in the format wsYEARcc.TYPE")
+    audio.add_argument("image_type", type=str, help="Image format (jpg, png, webp, etc.)")
+    audio.add_argument("artist", type=str, help="The name of the song's artist")
+    audio.add_argument("title", type=str, help="The title of the song")
+    audio.add_argument("language", type=str, help="The language code of the song")
+
+    video = subparsers.add_parser("video", help="Process a video file and only generate JSON")
+    video.add_argument("media_file", type=Path, help="Video file in the format wsYEARcc.TYPE")
+    video.add_argument("artist", type=str, help="The name of the song's artist")
+    video.add_argument("title", type=str, help="The title of the song")
+    video.add_argument("language", type=str, help="The language code of the song")
 
     return parser
 
@@ -421,7 +433,7 @@ def get_song_duration(path: Path) -> int:
     except ValueError as e:
         raise RuntimeError(f"ffprobe returned non-float duration: {s!r}") from e
 
-def make_json(song: SongData, duration: int) -> Path:
+def make_json(song: SongData, duration: int, mode: str) -> Path:
     json_path = song.json_path()
 
     if not quiet.get():
@@ -433,17 +445,25 @@ def make_json(song: SongData, duration: int) -> Path:
     if not confirm_overwrite(json_path):
         return json_path
 
+    if mode == 'video':
+        ext = 'mov'
+        ct = 'video/mp4'
+    elif mode == 'audio':
+        ext = 'm4a'
+        ct = 'audio/mp4'
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
     data = {
         "title": f"{song.formatted_artist()} – {song.title}",
         "duration": duration,
         "sources": [
             {
-                "url": f"{base_url}/{song.base_name()}.m4a",
-                "contentType": "audio/mp4",
+                "url": f"{base_url}/{song.base_name()}.{ext}",
+                "contentType": ct,
                 "quality": 1080
             }
-        ],
-        "thumbnail": f"{base_url}/{song.image_path().name}"
+        ]
     }
 
     with json_path.open('w') as f:
@@ -451,7 +471,9 @@ def make_json(song: SongData, duration: int) -> Path:
 
     return json_path
 
-def upload(path: Path, endpoint_url: str):
+def upload(path: Path | None, endpoint_url: str):
+    if path is None: return
+
     cmd = ['aws', 's3', 'cp',
         str(path),
         f's3://worldstage/{path.name}',
@@ -460,16 +482,26 @@ def upload(path: Path, endpoint_url: str):
     run(cmd)
 
 def main() -> None:
-    args = setup_args().parse_args()
-
     endpoint_url = os.getenv('R2_ENDPOINT_URL')
 
     if endpoint_url is None:
         print('R2_ENDPOINT_URL not set', file=sys.stderr)
         sys.exit(2)
 
-    song = SongData(audio_path=args.audio_file,
-                    image_type=f'.{args.image_type}',
+    args = setup_args().parse_args()
+
+    mode = args.mode
+
+    if mode == 'audio':
+        img_type = f'.{args.image_type}'
+    elif mode == 'video':
+        img_type = None
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+
+    song = SongData(audio_path=args.media_file,
+                    image_type=img_type,
                     output_directory=args.output_directory,
                     artist=args.artist,
                     title=args.title,
@@ -481,11 +513,14 @@ def main() -> None:
     dry_run.set(args.dry_run)
     overwrite.set(args.overwrite)
 
-    m4a_path = convert_to_m4a(song)
-    duration = get_song_duration(m4a_path)
-    json_path = make_json(song, duration)
+    if mode == 'audio':
+        media_path = convert_to_m4a(song)
+    else:
+        media_path = song.audio_path
+    duration = get_song_duration(media_path)
+    json_path = make_json(song, duration, args.mode)
 
-    upload(m4a_path, endpoint_url)
+    upload(media_path, endpoint_url)
     upload(json_path, endpoint_url)
     upload(song.image_path(), endpoint_url)
 

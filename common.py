@@ -1,10 +1,12 @@
+from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from enum import Enum, auto
 from pathlib import Path
 import shlex
 import subprocess as sp
 import sys, ctypes
-from typing import Any
+from typing import Any, Callable, Iterable, Literal, Type, TypeVar
 
 OUT_HANDLE = sys.stdout
 ERR_HANDLE = sys.stderr
@@ -36,12 +38,9 @@ def run(cmd: list[str] | str, *, capture: bool = True) -> sp.CompletedProcess:
             f"\n[cmd] {' '.join(map(shlex.quote, cmd))}\n[stderr]\n{e.stderr or ''}"
         ) from None
 
-# show, ro
-Clips = dict[tuple[str, str], dict[str, Path]]
-
 @dataclass
 class Args:
-    csv: Path
+    json: Path
     style: str
     tmpdir: Path
     browser: str | None
@@ -61,6 +60,63 @@ class Args:
     vidsdir: Path
     cardsdir: Path
     clipsdir: Path
+
+@dataclass(kw_only=True)
+class Data(ABC):
+    ro: str
+    show: str
+    cc: str
+    country: str
+    media_link: str
+    artist: str
+    title: str
+    language: str
+
+    snippet_start: float = 50
+    snippet_end: float = 70
+
+    video_path: Path | None = field(init=False, default=None)
+    clip1_path: Path | None = field(init=False, default=None)
+    clip2_path: Path | None = field(init=False, default=None)
+
+    @abstractmethod
+    def ext(self) -> str:
+        ...
+
+    def vpath(self) -> Path:
+        assert self.video_path is not None
+        return self.video_path
+
+    def c1path(self) -> Path:
+        assert self.clip1_path is not None
+        return self.clip1_path
+
+    def c2path(self) -> Path:
+        assert self.clip2_path is not None
+        return self.clip2_path
+
+    def __post_init__(self):
+        if type(self.ro) is int:
+            self.ro = f"{self.ro:02}"
+
+        self.cc = self.cc.upper()
+
+@dataclass(kw_only=True)
+class VideoData(Data):
+    def ext(self) -> str:
+        return 'mov'
+
+@dataclass(kw_only=True)
+class AudioData(Data):
+    image_link: str
+
+    def ext(self) -> str:
+        return 'm4a'
+
+CONSTRUCTORS: dict[str, Type[Data]] = {
+    "video": VideoData,
+    "audio": AudioData,
+}
 
 @dataclass
 class CS:
@@ -236,3 +292,13 @@ show_name_map = {
     "sc": "Repechage",
     "f": "Final",
 }
+
+
+T = TypeVar("T")
+K = TypeVar("K")
+
+def group_by(items: Iterable[T], key: Callable[[T], K]) -> dict[K, list[T]]:
+    out: dict[K, list[T]] = defaultdict(list)
+    for item in items:
+        out[key(item)].append(item)
+    return dict(out)

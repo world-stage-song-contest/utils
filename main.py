@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from collections import defaultdict
+import json
 import os
 from pathlib import Path
 from dataclasses import dataclass
@@ -6,6 +8,7 @@ import argparse
 import shutil
 import sys
 import time
+from typing import Any
 
 import cards
 import download
@@ -20,6 +23,38 @@ def cleanup(tmp: Path) -> None:
         for name in dirs:
             (root / name).rmdir()
 
+def data_from_dict(obj: dict[str, Any]) -> common.Data:
+    print(obj)
+    try:
+        type_tag = obj["type"]
+    except KeyError:
+        raise ValueError("Missing 'type' field")
+
+    try:
+        cls = common.CONSTRUCTORS[type_tag]
+    except KeyError:
+        raise ValueError(f"Unknown type: {type_tag!r}")
+
+    kwargs = dict(obj)
+    kwargs.pop("type")
+
+    return cls(**kwargs)
+
+def data_from_json(file: Path) -> list[common.Data]:
+    with file.open("r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    items = [data_from_dict(obj) for obj in raw]
+    return items
+
+def transform_data(data: list[common.Data]) -> dict[str, list[common.Data]]:
+    dic = defaultdict(list)
+
+    for d in data:
+        dic[d.media_link].append(d)
+
+    return dic
+
 def exec(args: common.Args) -> None:
     if shutil.which(args.yt_dlp) is None:
         print(f"Error: {args.yt_dlp} not found", file=common.ERR_HANDLE)
@@ -33,15 +68,17 @@ def exec(args: common.Args) -> None:
         print(f"Error: {args.inkscape} not found", file=common.ERR_HANDLE)
         sys.exit(1)
 
+    data = data_from_json(args.json)
+
     start = time.time()
     # Download videos
-    clips = download.main(args)
+    clips = download.main(args, data)
+    print(clips)
 
     # Create cards
-    cards.main(args)
+    cards.main(args, data)
 
-    # Create thumbnails
-    #thumbnails.main(args)
+    return
 
     # Create recap video
     recap.main(clips, args)
@@ -58,7 +95,7 @@ STAGES = ["download", "cards", "recap", "thumbs", "show"]
 def setup_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Process recap videos.")
 
-    parser.add_argument("csv", type=Path, help="CSV file with video metadata")
+    parser.add_argument("json", type=Path, help="JSON file with video metadata")
     parser.add_argument("--tmp", '-t', type=Path, default="temp", help="Temporary directory for clips and cards")
     parser.add_argument("--style", '-S', default="70s", help="Style to use for the cards")
     parser.add_argument("--browser", '-b', default=None, help="Browser to use for downloads")
@@ -91,7 +128,7 @@ def main() -> None:
         sys.exit(2)
 
     exec(common.Args(
-        csv=args.csv,
+        json=args.json,
         style=args.style,
         tmpdir=args.tmp,
         vidsdir=args.tmp / "videos",

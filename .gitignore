@@ -8,5 +8,6 @@ common
 *.mp4
 *.csv
 *.cfg
+*.json
 .DS_Store
 thumbs.db

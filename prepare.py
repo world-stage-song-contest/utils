@@ -261,6 +261,7 @@ class SongData:
     artist: str
     title: str
     language: str
+    subtitles: bool
 
     def __post_init__(self):
         if not re.fullmatch(r"[a-z]{2,3}(-[a-z0-9]{2,8})*", self.language):
@@ -292,11 +293,31 @@ class SongData:
 
         return None
 
+    def subtitles_path(self) -> Path | None:
+        if not self.subtitles:
+            return None
+
+        return self.audio_path.with_suffix('.vtt')
+
     def base_name(self) -> str:
         return self.audio_path.stem
 
     def json_path(self) -> Path:
         return self.output_path().with_suffix('.json')
+
+    def image_name(self) -> str:
+        ip = self.image_path()
+        if not ip:
+            return ''
+
+        return ip.name
+
+    def subtitles_name(self) -> str:
+        sp = self.subtitles_path()
+        if not sp:
+            return ''
+
+        return sp.name
 
     def year_cc(self) -> tuple[str, str]:
         return self._year, self._cc
@@ -352,6 +373,7 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--quiet", "-q", action="store_true", help="Do not print commands that are executed")
     parser.add_argument("--overwrite", "-y", action="store_true", help="Overwrite files without asking")
     parser.add_argument("--output-directory", "-o", type=Path, help="Output destination")
+    parser.add_argument("--subtitles", "-s", action="store_true", help="Add a subtitle track. Must be in the same directory as the video file and have a .vtt extension")
 
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
@@ -466,6 +488,17 @@ def make_json(song: SongData, duration: int, mode: str) -> Path:
         ]
     }
 
+    if mode == 'audio':
+        data['thumbnail'] = f"{base_url}/{song.image_name()}"
+
+    if song.subtitles:
+        data['textTracks'] = {
+            "default": True,
+            "name": "Subtitles",
+            "contentType": "text/vtt",
+            "url": f"{base_url}/{song.subtitles_name()}"
+        }
+
     with json_path.open('w') as f:
         json.dump(data, f, ensure_ascii=True)
 
@@ -505,7 +538,8 @@ def main() -> None:
                     output_directory=args.output_directory,
                     artist=args.artist,
                     title=args.title,
-                    language=args.language.lower())
+                    language=args.language.lower(),
+                    subtitles=args.subtitles)
 
     song.output_path().parent.mkdir(parents=True, exist_ok=True)
 
@@ -523,6 +557,7 @@ def main() -> None:
     upload(media_path, endpoint_url)
     upload(json_path, endpoint_url)
     upload(song.image_path(), endpoint_url)
+    upload(song.subtitles_path(), endpoint_url)
 
 if __name__ == '__main__':
     main()

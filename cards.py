@@ -8,23 +8,6 @@ import multiprocessing as mp
 import common
 import svg
 
-@dataclass
-class Data:
-    show: str
-    country: str
-    country_name: str
-    artist: str
-    title: str
-    ro: str
-
-    def __init__(self, show: str, country: str, country_name: str, artist: str, title: str, ro: str):
-        self.show = show
-        self.country = country
-        self.country_name = country_name
-        self.artist = artist
-        self.title = title
-        self.ro = ro
-
 OFFSET = 25
 MARGIN = 12
 FONT_FAMILY_1 = "Aptos Display"
@@ -36,12 +19,13 @@ def convert_svg_to_png(svg_path: Path, png_path: Path, inkscape: str) -> None:
         inkscape,
         "--export-type=png",
         "--export-filename", str(png_path),
+        "--export-background-opacity=0",
         str(svg_path)
     ]
     common.run(cmd, capture=False)
 
 def make_70s_entry_svg(d: ET.Element, width: int, height: int, card_height: int,
-                       v: Data, scheme: common.CS) -> ET.Element:
+                       v: common.Data, scheme: common.CS) -> ET.Element:
     m = common.colours["70s"]
     y_off = height - card_height
     c1_diameter = card_height - 2 * MARGIN
@@ -63,7 +47,7 @@ def make_70s_entry_svg(d: ET.Element, width: int, height: int, card_height: int,
                         font_family=FONT_FAMILY_2)
     d.append(ro_text)
 
-    country_text = svg.text(v.country_name, 60, line_offset + OFFSET, card_height // 2 + 70 + y_off,
+    country_text = svg.text(v.country, 60, line_offset + OFFSET, card_height // 2 + 70 + y_off,
                              fill=m[scheme.text], font_family=FONT_FAMILY_1)
     d.append(country_text)
 
@@ -77,47 +61,77 @@ def make_70s_entry_svg(d: ET.Element, width: int, height: int, card_height: int,
 
     return d
 
+def make_90s_entry_svg(d: ET.Element, width: int, height: int, card_height: int,
+                       v: common.Data, scheme: common.CS) -> ET.Element:
+    style_el = svg.style(
+        """
+.number {
+    font-family: "Source Han Sans VF";
+    font-size: 54px;
+    font-weight: bold;
+    font-style: normal;
+    text-anchor: end;
+    dominant-baseline: auto;
+    text-align: center;
+}
+.country    {
+    font-family: "Aptos Narrow";
+    text-transform: uppercase;
+    font-size: 16px;
+    font-style: normal;
+    letter-spacing: 0.125em;
+    text-anchor: end;
+    dominant-baseline: auto;
+    text-align: end;
+}"""
+    )
+    d.append(style_el)
+
+    top_rect = svg.rectangle(0, 0, 720, 90, "#000", opacity="0.72")
+    d.append(top_rect)
+
+    bottom_rect = svg.rectangle(0, 450, 720, 90, "#000", opacity="0.72")
+    d.append(bottom_rect)
+
+    ro_text = svg.text(f"{v.ro}", 0, 630, 504, fill="#fff", class_="number")
+    d.append(ro_text)
+
+    country_text = svg.text(v.country, 0, 630, 524, fill="#fff", class_="country")
+    d.append(country_text)
+
+    artist_text = svg.text(v.artist, 20, 90, 70, fill="#fff", font_weight="normal", font_family="Aptos Narrow")
+    d.append(artist_text)
+
+    title_text = svg.text(v.title, 36, 90, 45, fill="#fff", font_weight="bold", font_family="Aptos Narrow")
+    d.append(title_text)
+
+    return d
+
 entry_functions = {
     "70s": make_70s_entry_svg,
+    "90s": make_90s_entry_svg,
 }
 
-def read_input(path: Path) -> list[Data]:
-    shows = []
-    with path.open(newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            typ = (row.get("type", '') or 'v').strip()
-            if typ != "v":
-                continue
-            rro = row["running_order"].strip()
-            try:
-                ro = f"{int(rro):02d}"
-            except ValueError:
-                ro = rro
-            show = row["show"]
-            ro = ro
-            country = row["country"].strip().upper()
-            country_name = row["country_name"].strip()
-            artist = row["artist"].strip()
-            title = row["title"].strip()
-            shows.append(Data(show, country, country_name, artist, title, ro))
-    return shows
+size_map = {
+    "70s": (1920, 1080),
+    "90s": (720, 540),
+}
 
-width, height = 1980, 1080
-
-def process_entry(v: Data, img_width: int, img_height: int, style: str, outdir: Path, inkscape: str) -> None:
-    base_name = f"{v.show}/{v.ro}_{v.country}"
+def process_entry(v: common.Data, img_width: int, img_height: int, style: str, outdir: Path, inkscape: str) -> None:
+    base_name = f"{v.show}/{v.ro}_{v.cc}"
     svg_path = outdir / "svg" / f"{base_name}.svg"
     svg_path.parent.mkdir(parents=True, exist_ok=True)
     png_path = outdir / f"{base_name}.png"
     if png_path.exists():
         print(f"[cards] {png_path} already exists, skipping.", file=common.OUT_HANDLE)
         return
-    print(f"[cards] Processing {v.ro:02} {v.country} ({v.show})", file=common.OUT_HANDLE)
-    d = svg.svg(img_width * 0.925, img_height * 0.925, width, height, origin="top-left")
+    print(f"[cards] Processing {v.ro} {v.cc} ({v.show})", file=common.OUT_HANDLE)
 
-    if v.country != 'XXX':
-        scheme = common.schemes[v.country]
+    width, height = size_map[style]
+    d = svg.svg(img_width, img_height, width, height, origin="top-left")
+
+    if v.cc != 'XX':
+        scheme = common.schemes[v.cc]
 
         make_entry_svg = entry_functions[style]
         make_entry_svg(d, width, height, height // 4, v, scheme)
@@ -125,7 +139,7 @@ def process_entry(v: Data, img_width: int, img_height: int, style: str, outdir: 
     svg.save(d, svg_path)
     convert_svg_to_png(svg_path, png_path, inkscape)
 
-def make_svgs(data: list[Data], size: tuple[int, int], style: str, outdir: Path, multi: bool, inkscape: str) -> None:
+def make_svgs(data: list[common.Data], size: tuple[int, int], style: str, outdir: Path, multi: bool, inkscape: str) -> None:
     if multi:
         with mp.Pool(mp.cpu_count()//2) as pool:
             pool.starmap(process_entry, [(v, size[0], size[1], style, outdir, inkscape) for v in data])
@@ -133,7 +147,6 @@ def make_svgs(data: list[Data], size: tuple[int, int], style: str, outdir: Path,
         for v in data:
             process_entry(v, size[0], size[1], style, outdir, inkscape)
 
-def main(args: common.Args) -> None:
+def main(args: common.Args, data: list[common.Data]) -> None:
     args.cardsdir.mkdir(parents=True, exist_ok=True)
-    data = read_input(Path(args.csv))
     make_svgs(data, args.size, args.style, Path(args.cardsdir), args.multiprocessing, args.inkscape)

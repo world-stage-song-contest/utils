@@ -43,7 +43,7 @@ def circle(cx: float, cy: float, r: float, fill='none', stroke='black', stroke_w
         stroke_width=str(stroke_width)
     )
 
-def rectangle(x: float, y: float, width: float, height: float, fill='none', stroke='black', stroke_width: float=0) -> ET.Element:
+def rectangle(x: float, y: float, width: float, height: float, fill='none', stroke='black', stroke_width: float=0, **attributes) -> ET.Element:
     return create_element(
         'rect',
         x=str(x),
@@ -52,7 +52,8 @@ def rectangle(x: float, y: float, width: float, height: float, fill='none', stro
         height=str(height),
         fill=fill,
         stroke=stroke,
-        stroke_width=str(stroke_width)
+        stroke_width=str(stroke_width),
+        **attributes
     )
 
 def line(x1: float, y1: float, x2: float, y2: float, stroke='black', stroke_width: float = 1) -> ET.Element:
@@ -78,6 +79,12 @@ def image(x: float, y: float, width: float, height: float, path: Path):
 
 def defs():
     return create_element('defs')
+
+def style(contents: str):
+    return create_element(
+        'style',
+        contents
+    )
 
 def filter(id: str, **attributes: str):
     return create_element(

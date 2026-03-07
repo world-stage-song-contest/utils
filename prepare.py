@@ -373,6 +373,8 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--quiet", "-q", action="store_true", help="Do not print commands that are executed")
     parser.add_argument("--overwrite", "-y", action="store_true", help="Overwrite files without asking")
     parser.add_argument("--output-directory", "-o", type=Path, help="Output destination")
+    parser.add_argument("--upload", "-u", dest="upload", action="store_true", help="Upload the files (default)")
+    parser.add_argument("--no-upload", "-U", dest="upload", action="store_false", help="Do not upload the files")
     parser.add_argument("--subtitles", "-s", action="store_true", help="Add a subtitle track. Must be in the same directory as the video file and have a .vtt extension")
 
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -389,6 +391,8 @@ def setup_args() -> argparse.ArgumentParser:
     video.add_argument("artist", type=str, help="The name of the song's artist")
     video.add_argument("title", type=str, help="The title of the song")
     video.add_argument("language", type=str, help="The language code of the song")
+
+    parser.set_defaults(upload=True)
 
     return parser
 
@@ -554,10 +558,11 @@ def main() -> None:
     duration = get_song_duration(media_path)
     json_path = make_json(song, duration, args.mode)
 
-    upload(media_path, endpoint_url)
-    upload(json_path, endpoint_url)
-    upload(song.image_path(), endpoint_url)
-    upload(song.subtitles_path(), endpoint_url)
+    if args.upload:
+        upload(media_path, endpoint_url)
+        upload(json_path, endpoint_url)
+        upload(song.image_path(), endpoint_url)
+        upload(song.subtitles_path(), endpoint_url)
 
 if __name__ == '__main__':
     main()

@@ -432,7 +432,7 @@ def convert_to_m4a(song: SongData) -> Path:
         '-metadata', f'location={country}',
         '-metadata:s:a:0', f'language={song.language}',
         '-metadata', 'album_artist=World Stage',
-        '-f', 'mp4',
+        '-movflags', '+faststart', '-f', 'mp4',
         str(out_path)]
 
     run(cmd)

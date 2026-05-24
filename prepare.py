@@ -282,10 +282,12 @@ class SongData:
         self._cc = m.group("cc")
 
     def output_path(self) -> Path:
+        ext = '.mov' if self.image_type is None else '.m4a'
+        
         if self.output_directory is not None:
-            return self.output_directory / f"{self.audio_path.stem}.m4a"
+            return self.output_directory / f"{self.audio_path.stem}{ext}"
         else:
-            return self.audio_path.with_suffix('.m4a')
+            return self.audio_path.with_suffix(ext)
 
     def image_path(self) -> Path | None:
         if self.image_type is not None:
@@ -437,6 +439,64 @@ def convert_to_m4a(song: SongData) -> Path:
 
     run(cmd)
     return out_path
+    
+def convert_to_mov(song: SongData) -> Path:
+    video_path = song.audio_path
+    out_path = video_path.with_suffix(".mov")
+
+    year, cc = song.year_cc()
+    country = cc_map.get(cc)
+
+    if not country:
+        raise ValueError(f"unknown country code '{cc}' for file {video_path}")
+
+    if not confirm_overwrite(out_path):
+        return out_path
+
+    cmd = [
+        'ffmpeg', '-y', '-hide_banner',
+        '-i', str(video_path)
+    ]
+
+    subtitle_path = song.subtitles_path()
+
+    if subtitle_path:
+        cmd += [
+            '-i', str(subtitle_path),
+            '-map', '0:v',
+            '-map', '0:a',
+            '-map', '1',
+            '-c:v', 'copy',
+            '-c:a', 'copy',
+            '-c:s', 'mov_text',
+            '-metadata:s:s:0', 'language=eng'
+        ]
+    else:
+        cmd += [
+            '-c:v', 'copy',
+            '-c:a', 'copy'
+        ]
+
+    cmd += [
+        '-map_metadata', '-1',
+
+        '-metadata', f'title={song.title}',
+        '-metadata', f'artist={song.artist}',
+        '-metadata', f'album={country} {year}',
+        '-metadata', f'keywords={country};{year}',
+        '-metadata', f'date={year}',
+        '-metadata', f'location={country}',
+        '-metadata:s:a:0', f'language={song.language}',
+        '-metadata', 'album_artist=World Stage',
+
+        '-movflags', '+faststart',
+        '-f', 'mp4',
+        str(out_path)
+    ]
+
+    run(cmd)
+
+    return out_path
 
 def get_song_duration(path: Path) -> int:
     if dry_run.get():
@@ -567,6 +627,8 @@ def main() -> None:
 
     if mode == 'audio':
         media_path = convert_to_m4a(song)
+    elif mode == 'video':
+        media_path = convert_to_mov(song)
     else:
         media_path = song.audio_path
     duration = get_song_duration(media_path)

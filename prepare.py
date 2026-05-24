@@ -496,15 +496,15 @@ def make_json(song: SongData, duration: int, mode: str) -> Path:
         data['thumbnail'] = f"{base_url}/{song.image_name()}"
 
     if song.subtitles:
-        data['textTracks'] = {
+        data['textTracks'] = [{
             "default": True,
             "name": "Subtitles",
             "contentType": "text/vtt",
             "url": f"{base_url}/{song.subtitles_name()}"
-        }
+        }]
 
     with json_path.open('w') as f:
-        json.dump(data, f, ensure_ascii=True)
+        json.dump(data, f, ensure_ascii=True, indent=4)
 
     return json_path
 
@@ -513,9 +513,18 @@ def upload(path: Path | None, endpoint_url: str):
 
     cmd = ['aws', 's3', 'cp',
         str(path),
-        f's3://worldstage/{path.name}',
-        '--endpoint-url', endpoint_url,
-        '--profile', 'r2']
+        f's3://worldstage/{path.name}']
+
+    suffix = path.suffix.lower()
+
+    if suffix == '.mov':
+        cmd += ['--content-type', 'video/mp4']
+    elif suffix == '.m4a':
+        cmd += ['--content-type', 'audio/mp4']
+        
+   cmd += ['--endpoint-url', endpoint_url,
+            '--profile', 'r2']
+
     run(cmd)
 
 def main() -> None:

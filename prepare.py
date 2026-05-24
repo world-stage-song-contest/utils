@@ -509,11 +509,14 @@ def make_json(song: SongData, duration: int, mode: str) -> Path:
     return json_path
 
 def upload(path: Path | None, endpoint_url: str):
-    if path is None: return
+    if path is None:
+        return
 
-    cmd = ['aws', 's3', 'cp',
+    cmd = [
+        'aws', 's3', 'cp',
         str(path),
-        f's3://worldstage/{path.name}']
+        f's3://worldstage/{path.name}'
+    ]
 
     suffix = path.suffix.lower()
 
@@ -521,9 +524,11 @@ def upload(path: Path | None, endpoint_url: str):
         cmd += ['--content-type', 'video/mp4']
     elif suffix == '.m4a':
         cmd += ['--content-type', 'audio/mp4']
-        
-   cmd += ['--endpoint-url', endpoint_url,
-            '--profile', 'r2']
+
+    cmd += [
+        '--endpoint-url', endpoint_url,
+        '--profile', 'r2'
+    ]
 
     run(cmd)
 

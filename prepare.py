@@ -67,7 +67,7 @@ cc_map = {
     "cy": "Cyprus",
     "cz": "Czechia",
     "dd": "East Germany",
-    "de": "West Germany",
+    "de": "Germany",
     "dj": "Djibouti",
     "dk": "Denmark",
     "dm": "Dominica",

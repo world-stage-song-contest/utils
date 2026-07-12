@@ -45,19 +45,28 @@ class App(tk.Frame):
             browser=self.browser.get().lower() or None,
             po_token=self.po_token.get() or None,
             style=self.style.get(),
-            size=common.parse_size(self.size.get()),
+            size=common.parse_size(self.size.get()) if self.size.get().strip() else None,
+            auto_height=int(self.auto_height.get()),
             output=Path(self.output_path.get()),
             fps=int(self.fps.get()),
             fade_duration=float(self.fade_duration.get()),
+            av1_preset=int(self.av1_preset.get()),
+            av1_crf=int(self.av1_crf.get()),
+            av1_threads=int(self.av1_threads.get()),
+            opus_bitrate=self.opus_bitrate.get(),
+            audio_normalization=self.audio_normalization.get(),
+            jobs=int(self.jobs.get()),
             multiprocessing=self.multiprocessing_var.get(),
             cleanup=self.cleanup_var.get(),
             ffmpeg=self.ffmpeg_path.get(),
             ffprobe=self.ffprobe_path.get(),
             yt_dlp=self.yt_dlp_path.get(),
             inkscape=self.inkscape_path.get(),
+            card_renderer=self.card_renderer.get(),
+            resvg=self.resvg_path.get(),
             only_straight=self.straight_var.get(),
             only_reverse=self.reverse_var.get(),
-            vidsdir=tmpdir / "videos",
+            vidsdir=tmpdir / "sources",
             cardsdir=tmpdir / "cards",
             clipsdir=tmpdir / "clips",
         )
@@ -70,7 +79,7 @@ class App(tk.Frame):
         self.grid()
 
         ttk.Label(self, text="General settings", font=("", 18, "bold")).grid(column=0, row=self.row(), columnspan=3)
-        ttk.Label(self, text="CSV file").grid(column=0, row=self.row(), sticky="e")
+        ttk.Label(self, text="Input file").grid(column=0, row=self.row(), sticky="e")
         self.csv_path = tk.StringVar()
         self.csv_entry = ttk.Entry(self, textvariable=self.csv_path)
         self.csv_entry.grid(column=1, row=self._row, sticky="ew")
@@ -95,6 +104,15 @@ class App(tk.Frame):
         self.inkscape_entry = ttk.Entry(self, textvariable=self.inkscape_path)
         self.inkscape_entry.grid(column=1, row=self._row, sticky="ew")
         ttk.Button(self, text="...", command=lambda: self.pick_file(self.inkscape_path)).grid(column=2, row=self._row)
+        ttk.Label(self, text="Card renderer").grid(column=0, row=self.row(), sticky="e")
+        self.card_renderer = tk.StringVar(value="inkscape")
+        self.card_renderer_entry = ttk.Combobox(self, textvariable=self.card_renderer, values=["inkscape", "resvg"])
+        self.card_renderer_entry.grid(column=1, row=self._row, sticky="ew")
+        ttk.Label(self, text="Resvg").grid(column=0, row=self.row(), sticky="e")
+        self.resvg_path = tk.StringVar(value="rsvg-convert")
+        self.resvg_entry = ttk.Entry(self, textvariable=self.resvg_path)
+        self.resvg_entry.grid(column=1, row=self._row, sticky="ew")
+        ttk.Button(self, text="...", command=lambda: self.pick_file(self.resvg_path)).grid(column=2, row=self._row)
         ttk.Label(self, text="FFmpeg").grid(column=0, row=self.row(), sticky="e")
         self.ffmpeg_path = tk.StringVar(value="ffmpeg")
         self.ffmpeg_entry = ttk.Entry(self, textvariable=self.ffmpeg_path)
@@ -126,10 +144,14 @@ class App(tk.Frame):
         self.style = tk.StringVar(value="70s")
         self.style_entry = ttk.Combobox(self, textvariable=self.style, values=list(common.colours.keys()))
         self.style_entry.grid(column=1, row=self._row, sticky="ew")
-        ttk.Label(self, text="Size (WxH)").grid(column=0, row=self.row(), sticky="e")
-        self.size = tk.StringVar(value="1920x1080")
+        ttk.Label(self, text="Size override (WxH)").grid(column=0, row=self.row(), sticky="e")
+        self.size = tk.StringVar()
         self.size_entry = ttk.Entry(self, textvariable=self.size)
         self.size_entry.grid(column=1, row=self._row, sticky="ew")
+        ttk.Label(self, text="Automatic height").grid(column=0, row=self.row(), sticky="e")
+        self.auto_height = tk.StringVar(value="1080")
+        self.auto_height_entry = ttk.Entry(self, textvariable=self.auto_height)
+        self.auto_height_entry.grid(column=1, row=self._row, sticky="ew")
 
         ttk.Label(self, text="Recap settings", font=("", 18, "bold")).grid(column=0, row=self.row(), columnspan=3)
         ttk.Label(self, text="Output dir").grid(column=0, row=self.row(), sticky="e")
@@ -145,6 +167,30 @@ class App(tk.Frame):
         self.fps = tk.StringVar(value="60")
         self.fps_entry = ttk.Entry(self, textvariable=self.fps)
         self.fps_entry.grid(column=1, row=self._row, sticky="ew")
+        ttk.Label(self, text="AV1 preset").grid(column=0, row=self.row(), sticky="e")
+        self.av1_preset = tk.StringVar(value="8")
+        self.av1_preset_entry = ttk.Entry(self, textvariable=self.av1_preset)
+        self.av1_preset_entry.grid(column=1, row=self._row, sticky="ew")
+        ttk.Label(self, text="AV1 CRF").grid(column=0, row=self.row(), sticky="e")
+        self.av1_crf = tk.StringVar(value="30")
+        self.av1_crf_entry = ttk.Entry(self, textvariable=self.av1_crf)
+        self.av1_crf_entry.grid(column=1, row=self._row, sticky="ew")
+        ttk.Label(self, text="AV1 threads (0=auto)").grid(column=0, row=self.row(), sticky="e")
+        self.av1_threads = tk.StringVar(value="0")
+        self.av1_threads_entry = ttk.Entry(self, textvariable=self.av1_threads)
+        self.av1_threads_entry.grid(column=1, row=self._row, sticky="ew")
+        ttk.Label(self, text="Opus bitrate").grid(column=0, row=self.row(), sticky="e")
+        self.opus_bitrate = tk.StringVar(value="160k")
+        self.opus_bitrate_entry = ttk.Entry(self, textvariable=self.opus_bitrate)
+        self.opus_bitrate_entry.grid(column=1, row=self._row, sticky="ew")
+        ttk.Label(self, text="Audio normalization").grid(column=0, row=self.row(), sticky="e")
+        self.audio_normalization = tk.StringVar(value="two-pass")
+        self.audio_normalization_entry = ttk.Combobox(self, textvariable=self.audio_normalization, values=["none", "one-pass", "two-pass"])
+        self.audio_normalization_entry.grid(column=1, row=self._row, sticky="ew")
+        ttk.Label(self, text="Render jobs (0=auto)").grid(column=0, row=self.row(), sticky="e")
+        self.jobs = tk.StringVar(value="0")
+        self.jobs_entry = ttk.Entry(self, textvariable=self.jobs)
+        self.jobs_entry.grid(column=1, row=self._row, sticky="ew")
         ttk.Label(self, text="The next two are mutually exclusive", font=("", 12, "bold")).grid(column=0, row=self.row(), columnspan=3)
         ttk.Label(self, text="Only straight recap").grid(column=0, row=self.row(), sticky="e")
         self.straight_var = tk.BooleanVar(value=False)

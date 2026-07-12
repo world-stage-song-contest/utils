@@ -9,5 +9,6 @@ common
 *.csv
 *.cfg
 *.json
+!pyrightconfig.json
 .DS_Store
 thumbs.db

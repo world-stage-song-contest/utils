@@ -1,291 +1,298 @@
 #!/usr/bin/env python3
-import argparse
 from collections import defaultdict
 from dataclasses import dataclass
-import re
-import sys
-import time
-import csv
-import multiprocessing as mp
 from pathlib import Path
+import hashlib
+import multiprocessing as mp
+import re
+import shutil
+import sqlite3
+import time
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import common
 
-@dataclass
+RECAP_MEDIA_TYPES = {"v", "a"}
+WORLD_STAGE_HOST = "media.world-stage.org"
+HTTP_HEADERS = {"User-Agent": "World Stage recap maker"}
+_YT_RE = re.compile(r"(?:youtube\.com\/watch.*?[?&]v=|youtu\.be\/)([\w-]{11})")
+_GDRIVE_RE = re.compile(r"/d/([A-Za-z0-9_-]{10,})")
+
+
+@dataclass(frozen=True)
 class Data:
     ro: str
     show: str
     country: str
-    video_link: str
-    artist: str
-    title: str
+    media_link: str
+    media_type: str
+    image_link: str
 
-    def with_other(self, **kwargs) -> 'Data':
-        ret = Data(
-            ro=self.ro,
-            show=self.show,
-            country=self.country,
-            video_link=self.video_link,
-            artist=self.artist,
-            title=self.title,
-        )
 
-        for k, v in kwargs.items():
-            setattr(ret, k, v)
+@dataclass(frozen=True)
+class CacheRecord:
+    url: str
+    etag: str | None
+    object_path: Path
+    display_aspect: float | None
 
-        return ret
-
-_YT_RE = re.compile(r"(?:youtube\.com\/watch.*?[?&]v=|youtu\.be\/)([\w-]{11})")
-_GDRIVE_RE = re.compile(r"/d/([A-Za-z0-9_-]{10,})")
 
 def youtube_id(url: str) -> str:
-    m = _YT_RE.search(url)
-    if not m:
+    match = _YT_RE.search(url)
+    if not match:
         raise ValueError(f"Cannot parse YouTube id from: {url}")
-    return m.group(1)
+    return match.group(1)
 
-def is_single_frame(path: Path, args: common.Args) -> bool:
-    p = common.run([args.ffprobe, "-v", "error", "-count_frames", "-select_streams", "v:0",
-             "-show_entries", "stream=nb_read_frames",
-             "-of", "default=nokey=1:noprint_wrappers=1", str(path)])
-    return p.stdout.strip() == "1"
 
-def detect_colour_format(path: Path, args: common.Args) -> tuple[str, str]:
-    p = common.run([args.ffprobe, "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=pix_fmt,color_range",
-             "-of", "csv=p=0", str(path)])
+def cache_database_path(sources_dir: Path) -> Path:
+    return sources_dir / "source-cache.sqlite3"
+
+
+def initialize_cache(database: Path) -> None:
+    """Create the content-addressed source cache, migrating the old path cache."""
+    with sqlite3.connect(database, timeout=30) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(source_cache)")}
+        if columns and "cache_key" not in columns:
+            conn.execute("ALTER TABLE source_cache RENAME TO source_cache_legacy")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS source_cache (
+                cache_key TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                etag TEXT,
+                object_path TEXT NOT NULL,
+                display_aspect REAL,
+                updated_at INTEGER NOT NULL
+            )
+        """)
+        if "source_cache_legacy" in {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }:
+            for media_path, url, etag, updated_at in conn.execute(
+                "SELECT media_path, url, etag, updated_at FROM source_cache_legacy"
+            ):
+                key = cache_key("media", url, etag)
+                conn.execute("""
+                    INSERT OR IGNORE INTO source_cache
+                        (cache_key, url, etag, object_path, display_aspect, updated_at)
+                    VALUES (?, ?, ?, ?, NULL, ?)
+                """, (key, url, etag, media_path, updated_at))
+            conn.execute("DROP TABLE source_cache_legacy")
+        for key, stored_path in conn.execute("SELECT cache_key, object_path FROM source_cache"):
+            normalized = str(Path(stored_path).resolve())
+            if normalized != stored_path:
+                conn.execute("UPDATE source_cache SET object_path = ? WHERE cache_key = ?", (normalized, key))
+
+
+def cache_key(kind: str, url: str, etag: str | None) -> str:
+    if is_world_stage_url(url) and etag:
+        return f"{kind}:etag:{etag}"
+    return f"{kind}:url:{url}"
+
+
+def read_cache_record(database: Path, key: str) -> CacheRecord | None:
+    with sqlite3.connect(database, timeout=30) as conn:
+        row = conn.execute(
+            "SELECT url, etag, object_path, display_aspect FROM source_cache WHERE cache_key = ?",
+            (key,),
+        ).fetchone()
+    if row is None:
+        return None
+    return CacheRecord(row[0], row[1], Path(row[2]), row[3])
+
+
+def write_cache_record(
+    database: Path, key: str, url: str, etag: str | None, object_path: Path,
+) -> None:
+    with sqlite3.connect(database, timeout=30) as conn:
+        conn.execute("""
+            INSERT INTO source_cache (cache_key, url, etag, object_path, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+                url = excluded.url,
+                etag = excluded.etag,
+                object_path = excluded.object_path,
+                updated_at = excluded.updated_at
+        """, (key, url, etag, str(object_path.resolve()), int(time.time())))
+
+
+def cached_display_aspect(sources_dir: Path, media_path: Path) -> float | None:
+    database = cache_database_path(sources_dir)
+    with sqlite3.connect(database, timeout=30) as conn:
+        row = conn.execute(
+            "SELECT display_aspect FROM source_cache WHERE object_path = ?",
+            (str(media_path.resolve()),),
+        ).fetchone()
+    return None if row is None else row[0]
+
+
+def store_display_aspect(sources_dir: Path, media_path: Path, aspect: float) -> None:
+    database = cache_database_path(sources_dir)
+    with sqlite3.connect(database, timeout=30) as conn:
+        conn.execute(
+            "UPDATE source_cache SET display_aspect = ? WHERE object_path = ?",
+            (aspect, str(media_path.resolve())),
+        )
+
+
+def is_world_stage_url(url: str) -> bool:
+    return (urlparse(url).hostname or "").lower() == WORLD_STAGE_HOST
+
+
+def world_stage_etag(url: str) -> str | None:
+    request = Request(url, headers=HTTP_HEADERS, method="HEAD")
     try:
-        pix_fmt, color_range, *_ = p.stdout.strip().split(',')
-        return pix_fmt, color_range
-    except ValueError:
-        raise RuntimeError(f"Cannot parse colour format from: {path}")
+        with urlopen(request, timeout=60) as response:
+            return response.headers.get("ETag")
+    except (HTTPError, URLError) as exc:
+        raise RuntimeError(f"Could not read ETag for {url}: {exc}") from exc
 
-def clip_duration(path: Path, args: common.Args) -> float:
-    p = common.run([args.ffprobe, "-v", "error", "-select_streams", "a:0",
-             "-show_entries", "stream=duration",
-             "-of", "default=nw=1:nk=1", str(path)])
+
+def download_direct(url: str, destination: Path) -> None:
+    """Stream a direct URL and resume a partial file when the server supports it."""
+    offset = destination.stat().st_size if destination.exists() else 0
+    headers = dict(HTTP_HEADERS)
+    if offset:
+        headers["Range"] = f"bytes={offset}-"
+    request = Request(url, headers=headers)
     try:
-        return float(p.stdout.strip())
-    except ValueError:
-        raise RuntimeError(f"Cannot parse duration from: {path}")
+        with urlopen(request, timeout=60) as response:
+            status = response.getcode()
+            mode = "ab" if offset and status == 206 else "wb"
+            with destination.open(mode) as output:
+                shutil.copyfileobj(response, output, length=1024 * 1024)
+    except (HTTPError, URLError) as exc:
+        raise RuntimeError(f"Could not download {url}: {exc}") from exc
 
-def build_vf(target_w: int, target_h: int, fps: int) -> str:
-    """
-    square-pixels → fit/pad to 16:9 → overlay → optional fade-in/out
-    → constant-fps → yuv420p   ==> label [v]
-    """
-    r = f"{target_w}/{target_h}"
-    filt = []
 
-    # 1. square the pixels
-    filt.append("[0:v]scale=w='ceil(iw*sar/2)*2':h='ceil(ih/2)*2'"
-                ":flags=lanczos,setsar=1[v]")
+def object_path(sources_dir: Path, key: str, suffix: str) -> Path:
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    path = sources_dir / "objects" / f"{digest}{suffix}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
-    # 2. fit & pad
-    filt.append(f"[v]scale=w='if(gt(a,{r}),{target_w},-2)':"
-                f"h='if(gt(a,{r}),-2,{target_h})':flags=lanczos,"
-                f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2,setsar=1[v]")
 
-    # 3. constant fps + pixel format
-    filt.append(f"[v]fps=fps={fps},format=yuv420p[v]")
-    return ";".join(filt)
+def link_object(existing: Path, alias: Path) -> Path:
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    if existing.absolute() == alias.absolute():
+        return alias
+    if alias.is_symlink() and alias.resolve() == existing.resolve():
+        return alias
+    if alias.exists() or alias.is_symlink():
+        alias.unlink()
+    alias.symlink_to(existing.absolute())
+    return alias
 
-def build_af(index: int) -> str:
-    """
-    loudnorm → optional afade-in/out   ==> label [a]
-    """
-    chain = f"[{index}:a]loudnorm=I=-14:TP=-1.5:LRA=11[a]"
-    return chain
 
-shared_flags = [
-    "-color_range", "tv", "-color_primaries", "bt709",
-    "-color_trc", "bt709", "-colorspace", "bt709",
-    "-c:v", "libx264", "-tune", "stillimage", "-crf", "18",
-    "-ac", "2", "-c:a", "aac", "-b:a", "192k",
-    "-shortest", "-pix_fmt", "yuv420p",
-    "-movflags", "+faststart", "-fflags", "+genpts",
-    "-avoid_negative_ts", "make_zero",
-    "-video_track_timescale", "90000",
-]
-
-def process_single_frame(clip: Path, result: Path, args: common.Args) -> None:
-    w, h = args.size
-    print(f"[post] {clip} is a single frame, creating a normal video.", file=common.OUT_HANDLE)
-    still = clip.with_suffix(".still.png")
-    common.run([args.ffmpeg, "-hide_banner", "-y",
-                "-i", str(clip), "-frames:v", "1", "-q:v", "2", str(still)])
-
-    common.run([args.ffmpeg, "-hide_banner", "-y",
-                "-loop", "1", "-framerate", str(args.fps),
-                "-i", str(still), "-i", str(clip),
-                "-vf", f"[0:v]scale=w='if(gt(a,{w}/{h}),{w},-2)':"
-                        f"h='if(gt(a,{w}/{h}),-2,{h})':flags=lanczos,"
-                        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1[v]",
-                *shared_flags,
-                str(result)])
-
-    still.unlink()
-
-def postprocess_clip(clip: Path, out: Path, data: Data, args: common.Args, *, unlink: bool = False) -> None:
-    result = out.with_suffix(".post.mp4")
-    if is_single_frame(clip, args):
-        process_single_frame(clip, result, args)
-    else:
-        pixel_format, colour_range = detect_colour_format(clip, args)
-        extra_vf = ""
-        extra_flags = []
-        if pixel_format == "yuvj420p" and colour_range == "pc":
-            extra_vf = "[v]zscale=in_range=pc:out_range=tv,format=yuv420p[v]"
-        else:
-            extra_flags = [
-                "-bsf:v", "h264_metadata=video_full_range_flag=0:"
-                          "colour_primaries=1:transfer_characteristics=1:"
-                          "matrix_coefficients=1"
-            ]
-        w, h = args.size
-        vf = build_vf(w, h, args.fps)
-        af = build_af(0)
-        common.run([
-            args.ffmpeg, "-hide_banner", "-y",
-            "-i", str(clip), "-filter_complex", f"{vf}{extra_vf};{af}",
-            "-map", "[v]", "-map", "[a]", "-r", str(args.fps),
-             *extra_flags, *shared_flags,
-            str(result)
-        ])
-    result.rename(out)
-    if unlink:
-        clip.unlink(missing_ok=True)
-
-def download_video(data: Data, out_path: Path, args: common.Args) -> Path:
-    url = data.video_link
-    args.vidsdir.mkdir(parents=True, exist_ok=True)
-    if out_path.exists():
-        print(f"[dl] {out_path} already exists, skipping download.", file=common.OUT_HANDLE)
-        return out_path
-
-    dl_path = out_path.with_suffix(".temp.mp4")
-
-    # --- YouTube -------------------------------------------------------------
+def fetch(url: str, media_type: str, destination: Path, args: common.Args) -> None:
     if "youtu" in url:
-        vid = youtube_id(url)
-        print(f"[dl] YT {vid}", file=common.OUT_HANDLE)
-        yt_dlp_args = [
-            args.yt_dlp, "-f", "bv*+ba/b"
+        format_selector = "ba[ext=m4a]/ba" if media_type == "a" else "bv*+ba/b"
+        command = [
+            args.yt_dlp, "-f", format_selector,
+            "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
         ]
-
-        yt_dlp_args.append("--extractor-args")
-        yt_dlp_args.append("youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416")
-
+        if media_type == "v":
+            command.extend(["--merge-output-format", "mp4"])
         if args.browser:
-            yt_dlp_args.append("--cookies-from-browser")
-            yt_dlp_args.append(args.browser)
-
+            command.extend(["--cookies-from-browser", args.browser])
         if args.ffmpeg != "ffmpeg":
-            yt_dlp_args.append("--ffmpeg-location")
-            yt_dlp_args.append(args.ffmpeg)
-
-        yt_dlp_args.append("-f")
-        yt_dlp_args.append("mp4")
-
-        yt_dlp_args.append("-o")
-        yt_dlp_args.append(str(dl_path))
-
-        yt_dlp_args.append(url)
-
-        common.run(yt_dlp_args)
-
-    # --- Google Drive --------------------------------------------------------
-    elif m := _GDRIVE_RE.search(url):
-        fid = m.group(1)
-        print(f"[dl] GDrive {fid}", file=common.OUT_HANDLE)
-        common.run(["gdown", "--id", fid, "-O", str(dl_path)])
-
-    # --- Direct link ---------------------------------------------------------
+            command.extend(["--ffmpeg-location", args.ffmpeg])
+        common.run([*command, "-o", str(destination), url])
+    elif match := _GDRIVE_RE.search(url):
+        common.run(["gdown", "--id", match.group(1), "-O", str(destination)])
     else:
-        filename = url.split("?")[0].rsplit("/", 1)[-1]
-        print(f"[dl] {filename}", file=common.OUT_HANDLE)
-        common.run(["curl", "-L", "-o", str(dl_path), url])
+        download_direct(url, destination)
 
-    postprocess_clip(dl_path, out_path, data, args, unlink=True)
 
-    return out_path
+def fetch_cached(
+    url: str, suffix: str, kind: str, media_type: str, args: common.Args,
+) -> Path:
+    database = cache_database_path(args.vidsdir)
+    etag = world_stage_etag(url) if is_world_stage_url(url) else None
+    key = cache_key(kind, url, etag)
+    record = read_cache_record(database, key)
+    if record is not None and record.object_path.exists():
+        return record.object_path
 
-def link_existing_clip(existing: Path, new: Path) -> Path:
-    if new.exists(follow_symlinks=False):
-        print(f"[dl] {new} already exists, skipping link creation.", file=common.OUT_HANDLE)
-        return new
-    new.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[dl] Linking {existing} to {new}", file=common.OUT_HANDLE)
-    new.symlink_to(existing.absolute())
-    return new
+    destination = object_path(args.vidsdir, key, suffix)
+    partial = destination.with_suffix(f".download{destination.suffix}")
+    print(f"[dl] Fetching {url.rsplit('/', 1)[-1]}", file=common.OUT_HANDLE)
+    fetch(url, media_type, partial, args)
+    if not partial.exists():
+        raise FileNotFoundError(f"Downloader did not create expected file: {partial}")
+    partial.replace(destination)
+    write_cache_record(database, key, url, etag, destination)
+    return destination
+
 
 def create_filename(row: Data, path: Path) -> Path:
-    p = path / row.show / f"{row.ro}_{row.country}.mov"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    return p
+    suffix = ".m4a" if row.media_type == "a" else ".mov"
+    return path / row.show / f"{row.ro}_{row.country}{suffix}"
+
+
+def cover_filename(row: Data, path: Path) -> Path | None:
+    if not row.image_link:
+        return None
+    suffix = Path(urlparse(row.image_link).path).suffix.lower() or ".jpg"
+    return path / row.show / f"{row.ro}_{row.country}.cover{suffix}"
+
+
+def download_media(data: Data, args: common.Args) -> Path:
+    suffix = ".m4a" if data.media_type == "a" else ".mov"
+    object_file = fetch_cached(data.media_link, suffix, "media", data.media_type, args)
+    return link_object(object_file, create_filename(data, args.vidsdir))
+
+
+def download_cover(data: Data, args: common.Args) -> None:
+    alias = cover_filename(data, args.vidsdir)
+    if alias is None:
+        return
+    object_file = fetch_cached(data.image_link, alias.suffix, "cover", "a", args)
+    link_object(object_file, alias)
+
 
 def download_many(data: list[Data], args: common.Args) -> list[tuple[str, str, str, Path]]:
-    ret = []
-    this = data[0]
-
-    name = create_filename(this, args.vidsdir)
-    master = download_video(this, name, args)
-    ret.append((this.show, this.country, this.ro, master))
+    master = download_media(data[0], args)
+    result = [(data[0].show, data[0].country, data[0].ro, master)]
     for row in data[1:]:
-        new_name = create_filename(row, args.vidsdir)
-        p = link_existing_clip(master, new_name)
-        ret.append((row.show, row.country, row.ro, p))
-    return ret
+        result.append((row.show, row.country, row.ro, link_object(master.resolve(), create_filename(row, args.vidsdir))))
+    for row in data:
+        if row.media_type == "a":
+            download_cover(row, args)
+    return result
+
 
 def main(args: common.Args) -> common.Clips:
-    data = defaultdict(list)
-    ret: common.Clips = defaultdict(dict)
-    sz = 0
-
-    with args.csv.open(newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            sz += 1
-            video_link = row["video_link"].strip()
-            raw_ro = row["running_order"].strip()
-            try:
-                ro = f"{int(raw_ro):02d}"
-            except ValueError:
-                ro = raw_ro
-            val = Data(
-                ro=ro,
-                show=row["show"].strip(),
-                video_link=video_link,
-                artist=row["artist"].strip(),
-                title=row["title"].strip(),
-                country=row["country"].strip().upper(),
-            )
-
-            data[video_link].append(val)
+    data: dict[tuple[str, str], list[Data]] = defaultdict(list)
+    result: common.Clips = defaultdict(dict)
+    for row in common.load_rows(args.csv):
+        media_type = row["type"]
+        if media_type not in RECAP_MEDIA_TYPES:
+            continue
+        raw_ro = row["ro"].strip()
+        try:
+            ro = f"{int(raw_ro):02d}"
+        except ValueError:
+            ro = raw_ro
+        value = Data(
+            ro=ro, show=row["show"].strip(), country=row["cc"].strip().upper(),
+            media_link=row["media_link"].strip(), media_type=media_type,
+            image_link=row.get("image_link", "").strip(),
+        )
+        data[(value.media_link, value.media_type)].append(value)
 
     args.vidsdir.mkdir(parents=True, exist_ok=True)
-
-    print(f"[dl] Found {sz} clips in {args.csv}", file=common.OUT_HANDLE)
-    start1 = time.time()
-
-    if args.multiprocessing:
-        clips = [x
-            for xs in mp.Pool(mp.cpu_count()//2).starmap(
-                download_many,
-                [(v, args) for v in data.values()]
-            )
-            for x in xs
-            ]
+    initialize_cache(cache_database_path(args.vidsdir))
+    print(f"[dl] Found {sum(map(len, data.values()))} recap sources in {args.csv}", file=common.OUT_HANDLE)
+    start = time.time()
+    jobs = [(values, args) for values in data.values()]
+    if args.multiprocessing and jobs:
+        with mp.Pool(max(1, mp.cpu_count() // 2)) as pool:
+            clips = [item for group in pool.starmap(download_many, jobs) for item in group]
     else:
-        clips = []
-        for v in data.values():
-            clips.extend(download_many(v, args))
-
-    end1 = time.time()
-
-    print(f"[dl] Processed {sz} clips in {end1 - start1:.2f} seconds", file=common.OUT_HANDLE)
-
+        clips = [item for values in data.values() for item in download_many(values, args)]
+    print(f"[dl] Processed {len(clips)} sources in {time.time() - start:.2f} seconds", file=common.OUT_HANDLE)
     for show, country, ro, path in clips:
-        ret[(show, ro)][country] = path
-
-    return ret
+        result[(show, ro)][country] = path
+    return result

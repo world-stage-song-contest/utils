@@ -2,8 +2,11 @@
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-import csv
+import hashlib
+import json
 import multiprocessing as mp
+import sqlite3
+import struct
 
 import common
 import svg
@@ -30,14 +33,17 @@ MARGIN = 12
 FONT_FAMILY_1 = "Aptos Display"
 FONT_FAMILY_2 = "Compacta"
 
-def convert_svg_to_png(svg_path: Path, png_path: Path, inkscape: str) -> None:
+CARD_RENDER_VERSION = 1
+
+
+def convert_svg_to_png(svg_path: Path, png_path: Path, renderer: str, inkscape: str, resvg: str) -> None:
     png_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        inkscape,
-        "--export-type=png",
-        "--export-filename", str(png_path),
-        str(svg_path)
-    ]
+    if renderer == "inkscape":
+        cmd = [inkscape, "--export-type=png", "--export-filename", str(png_path), str(svg_path)]
+    elif renderer == "resvg":
+        cmd = [resvg, "-o", str(png_path), str(svg_path)]
+    else:
+        raise ValueError(f"Unsupported card renderer: {renderer}")
     common.run(cmd, capture=False)
 
 def make_70s_entry_svg(d: ET.Element, width: int, height: int, card_height: int,
@@ -83,36 +89,85 @@ entry_functions = {
 
 def read_input(path: Path) -> list[Data]:
     shows = []
-    with path.open(newline='', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            typ = (row.get("type", '') or 'v').strip()
-            if typ != "v":
-                continue
-            rro = row["running_order"].strip()
-            try:
-                ro = f"{int(rro):02d}"
-            except ValueError:
-                ro = rro
-            show = row["show"]
-            ro = ro
-            country = row["country"].strip().upper()
-            country_name = row["country_name"].strip()
-            artist = row["artist"].strip()
-            title = row["title"].strip()
-            shows.append(Data(show, country, country_name, artist, title, ro))
+    for row in common.load_rows(path):
+        typ = row["type"]
+        if typ not in {"v", "a"}:
+            continue
+        rro = row["ro"].strip()
+        try:
+            ro = f"{int(rro):02d}"
+        except ValueError:
+            ro = rro
+        show = row["show"].strip()
+        country = row["cc"].strip().upper()
+        country_name = row["country"].strip()
+        artist = row["artist"].strip()
+        title = row["title"].strip()
+        shows.append(Data(show, country, country_name, artist, title, ro))
     return shows
 
 width, height = 1980, 1080
 
-def process_entry(v: Data, img_width: int, img_height: int, style: str, outdir: Path, inkscape: str) -> None:
+
+def png_size(path: Path) -> tuple[int, int] | None:
+    with path.open("rb") as f:
+        header = f.read(24)
+    if header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+        return None
+    return struct.unpack(">II", header[16:24])
+
+
+def cache_database_path(cards_dir: Path) -> Path:
+    return cards_dir / "card-cache.sqlite3"
+
+
+def initialize_cache(database: Path) -> None:
+    with sqlite3.connect(database, timeout=30) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS cards (path TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)")
+
+
+def card_fingerprint(v: Data, size: tuple[int, int], style: str, renderer: str) -> str:
+    value = {
+        "version": CARD_RENDER_VERSION, "show": v.show, "country": v.country,
+        "country_name": v.country_name, "artist": v.artist, "title": v.title,
+        "ro": v.ro, "size": size, "style": style, "renderer": renderer,
+    }
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def cached_fingerprint(database: Path, path: Path) -> str | None:
+    with sqlite3.connect(database, timeout=30) as conn:
+        row = conn.execute("SELECT fingerprint FROM cards WHERE path = ?", (str(path.absolute()),)).fetchone()
+    return None if row is None else row[0]
+
+
+def store_fingerprint(database: Path, path: Path, fingerprint: str) -> None:
+    with sqlite3.connect(database, timeout=30) as conn:
+        conn.execute("""
+            INSERT INTO cards (path, fingerprint) VALUES (?, ?)
+            ON CONFLICT(path) DO UPDATE SET fingerprint = excluded.fingerprint
+        """, (str(path.absolute()), fingerprint))
+
+
+def process_entry(
+    v: Data, img_width: int, img_height: int, style: str, outdir: Path,
+    renderer: str, inkscape: str, resvg: str,
+) -> None:
     base_name = f"{v.show}/{v.ro}_{v.country}"
     svg_path = outdir / "svg" / f"{base_name}.svg"
     svg_path.parent.mkdir(parents=True, exist_ok=True)
     png_path = outdir / f"{base_name}.png"
-    if png_path.exists():
+    expected_size = (round(img_width * 0.925), round(img_height * 0.925))
+    database = cache_database_path(outdir)
+    fingerprint = card_fingerprint(v, (img_width, img_height), style, renderer)
+    if (
+        png_path.exists() and png_size(png_path) == expected_size
+        and cached_fingerprint(database, png_path) == fingerprint
+    ):
         print(f"[cards] {png_path} already exists, skipping.", file=common.OUT_HANDLE)
         return
+    if png_path.exists():
+        print(f"[cards] {png_path} has the wrong size; regenerating.", file=common.OUT_HANDLE)
     print(f"[cards] Processing {v.ro:02} {v.country} ({v.show})", file=common.OUT_HANDLE)
     d = svg.svg(img_width * 0.925, img_height * 0.925, width, height, origin="top-left")
 
@@ -123,17 +178,29 @@ def process_entry(v: Data, img_width: int, img_height: int, style: str, outdir: 
         make_entry_svg(d, width, height, height // 4, v, scheme)
 
     svg.save(d, svg_path)
-    convert_svg_to_png(svg_path, png_path, inkscape)
+    convert_svg_to_png(svg_path, png_path, renderer, inkscape, resvg)
+    store_fingerprint(database, png_path, fingerprint)
 
-def make_svgs(data: list[Data], size: tuple[int, int], style: str, outdir: Path, multi: bool, inkscape: str) -> None:
+def make_svgs(
+    data: list[Data], size: tuple[int, int], style: str, outdir: Path, multi: bool,
+    renderer: str, inkscape: str, resvg: str,
+) -> None:
     if multi:
         with mp.Pool(mp.cpu_count()//2) as pool:
-            pool.starmap(process_entry, [(v, size[0], size[1], style, outdir, inkscape) for v in data])
+            pool.starmap(process_entry, [
+                (v, size[0], size[1], style, outdir, renderer, inkscape, resvg) for v in data
+            ])
     else:
         for v in data:
-            process_entry(v, size[0], size[1], style, outdir, inkscape)
+            process_entry(v, size[0], size[1], style, outdir, renderer, inkscape, resvg)
 
 def main(args: common.Args) -> None:
+    if args.size is None:
+        raise RuntimeError("Output size must be resolved before generating cards")
     args.cardsdir.mkdir(parents=True, exist_ok=True)
+    initialize_cache(cache_database_path(args.cardsdir))
     data = read_input(Path(args.csv))
-    make_svgs(data, args.size, args.style, Path(args.cardsdir), args.multiprocessing, args.inkscape)
+    make_svgs(
+        data, args.size, args.style, Path(args.cardsdir), args.multiprocessing,
+        args.card_renderer, args.inkscape, args.resvg,
+    )

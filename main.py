@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 import os
 from pathlib import Path
-from dataclasses import dataclass
 import argparse
 import shutil
 import sys
 import time
+import json
 
 import cards
 import download
@@ -20,6 +20,73 @@ def cleanup(tmp: Path) -> None:
         for name in dirs:
             (root / name).rmdir()
 
+
+def even(value: float) -> int:
+    return max(2, int(round(value / 2) * 2))
+
+
+def video_display_aspect(path: Path, args: common.Args) -> float:
+    cached = download.cached_display_aspect(args.vidsdir, path)
+    if cached is not None:
+        return cached
+    proc = common.run([
+        args.ffprobe, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,sample_aspect_ratio", "-of", "json", str(path),
+    ])
+    streams = json.loads(proc.stdout).get("streams", [])
+    if not streams:
+        raise RuntimeError(f"No video stream found while detecting aspect ratio: {path}")
+    stream = streams[0]
+    width = int(stream["width"])
+    height = int(stream["height"])
+    try:
+        sar_width, sar_height = map(int, stream.get("sample_aspect_ratio", "1:1").split(":"))
+        if sar_width <= 0 or sar_height <= 0:
+            raise ValueError
+    except ValueError:
+        sar_width, sar_height = (1, 1)
+    aspect = (width * sar_width) / (height * sar_height)
+    download.store_display_aspect(args.vidsdir, path, aspect)
+    return aspect
+
+
+def resolve_output_size(clips: common.Clips, args: common.Args) -> None:
+    """Use an explicit size verbatim, otherwise derive a canvas aspect ratio."""
+    if args.size is not None:
+        return
+
+    aspects: list[tuple[float, Path]] = []
+    seen: set[Path] = set()
+    for row in common.load_rows(args.csv):
+        if row["type"] != "v":
+            continue
+        raw_ro = row["ro"].strip()
+        try:
+            ro = f"{int(raw_ro):02d}"
+        except ValueError:
+            ro = raw_ro
+        path = clips[(row["show"].strip(), ro)][row["cc"].strip().upper()]
+        if path in seen:
+            continue
+        seen.add(path)
+        aspects.append((video_display_aspect(path, args), path))
+
+    height = even(args.auto_height)
+    if aspects:
+        aspect, source = max(aspects, key=lambda value: value[0])
+        args.size = (even(height * aspect), height)
+        print(
+            f"Selected output size {args.size[0]}x{args.size[1]} from source aspect ratio "
+            f"{aspect:.5f} ({source}).",
+            file=common.OUT_HANDLE,
+        )
+    else:
+        args.size = (even(height * 16 / 9), height)
+        print(
+            f"No video entries found; using fallback output size {args.size[0]}x{args.size[1]}.",
+            file=common.OUT_HANDLE,
+        )
+
 def exec(args: common.Args) -> None:
     if shutil.which(args.yt_dlp) is None:
         print(f"Error: {args.yt_dlp} not found", file=common.ERR_HANDLE)
@@ -29,13 +96,17 @@ def exec(args: common.Args) -> None:
         print(f"Error: {args.ffmpeg} not found", file=common.ERR_HANDLE)
         sys.exit(1)
 
-    if not shutil.which(args.inkscape):
-        print(f"Error: {args.inkscape} not found", file=common.ERR_HANDLE)
+    renderer_path = args.inkscape if args.card_renderer == "inkscape" else args.resvg
+    if not shutil.which(renderer_path):
+        print(f"Error: {renderer_path} not found", file=common.ERR_HANDLE)
         sys.exit(1)
 
     start = time.time()
     # Download videos
     clips = download.main(args)
+
+    # Resolve an automatic canvas only after source video dimensions are known.
+    resolve_output_size(clips, args)
 
     # Create cards
     cards.main(args)
@@ -58,20 +129,29 @@ STAGES = ["download", "cards", "recap", "thumbs", "show"]
 def setup_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Process recap videos.")
 
-    parser.add_argument("csv", type=Path, help="CSV file with video metadata")
+    parser.add_argument("csv", type=Path, help="CSV or JSON file with recap metadata")
     parser.add_argument("--tmp", '-t', type=Path, default="temp", help="Temporary directory for clips and cards")
     parser.add_argument("--style", '-S', default="70s", help="Style to use for the cards")
     parser.add_argument("--browser", '-b', default=None, help="Browser to use for downloads")
     parser.add_argument("--po-token", '-p', default="", help="PO token for YouTube downloads")
-    parser.add_argument("--size", '-s', default="1280x720", type=common.parse_size, help="Output video size WxH")
+    parser.add_argument("--size", '-s', type=common.parse_size, help="Output size WxH (overrides automatic aspect ratio)")
+    parser.add_argument("--auto-height", type=int, default=720, help="Output height when selecting an automatic aspect ratio")
     parser.add_argument("--fps", '-F', type=int, default=60, help="Output video FPS")
     parser.add_argument("--fade-duration", '-f', type=float, default=0.25, help="Fade duration in seconds")
+    parser.add_argument("--av1-preset", type=int, default=8, help="SVT-AV1 speed preset (higher is faster)")
+    parser.add_argument("--av1-crf", type=int, default=30, help="SVT-AV1 constant-quality value")
+    parser.add_argument("--av1-threads", type=int, default=0, help="SVT-AV1 threads per render (0 uses encoder default)")
+    parser.add_argument("--opus-bitrate", default="160k", help="Recap Opus audio bitrate")
+    parser.add_argument("--audio-normalization", choices=["none", "one-pass", "two-pass"], default="two-pass", help="Recap audio loudness mode")
+    parser.add_argument("--jobs", type=int, default=0, help="Concurrent recap renders (0 selects automatically)")
     parser.add_argument("--output", '-o', type=Path, default="output", help="Output video file name")
     parser.add_argument("--multiprocessing", '-m', action='store_true', help="Use multiprocessing")
     parser.add_argument("--cleanup", '-c', action='store_true', help="Cleanup temporary files after processing")
     parser.add_argument("--only-direct", '-d', default=False, action="store_true", dest="direct", help="Only create a straight recap")
     parser.add_argument("--only-reverse", '-r', default=False, action="store_true", dest="reverse", help="Only create a reverse recap")
     parser.add_argument("--inkscape", default="inkscape", help="Path to the inkscape executable")
+    parser.add_argument("--card-renderer", choices=["inkscape", "resvg"], default="inkscape", help="SVG-to-PNG renderer")
+    parser.add_argument("--resvg", default="rsvg-convert", help="Path to the rsvg-convert executable")
     parser.add_argument("--yt-dlp", default="yt-dlp", help="Path to the yt-dlp executable")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="Path to the ffmpeg executable")
     parser.add_argument("--ffprobe", default="ffprobe", help="Path to the ffprobe executable")
@@ -94,20 +174,29 @@ def main() -> None:
         csv=args.csv,
         style=args.style,
         tmpdir=args.tmp,
-        vidsdir=args.tmp / "videos",
+        vidsdir=args.tmp / "sources",
         cardsdir=args.tmp / "cards",
         clipsdir=args.tmp / "clips",
         browser=args.browser,
         po_token=args.po_token,
         size=args.size,
+        auto_height=args.auto_height,
         fps=args.fps,
         fade_duration=args.fade_duration,
+        av1_preset=args.av1_preset,
+        av1_crf=args.av1_crf,
+        av1_threads=args.av1_threads,
+        opus_bitrate=args.opus_bitrate,
+        audio_normalization=args.audio_normalization,
+        jobs=args.jobs,
         output=args.output,
         multiprocessing=args.multiprocessing,
         cleanup=args.cleanup,
         ffmpeg=args.ffmpeg,
         ffprobe=args.ffprobe,
         inkscape=args.inkscape,
+        card_renderer=args.card_renderer,
+        resvg=args.resvg,
         yt_dlp=args.yt_dlp,
         only_straight=args.direct,
         only_reverse=args.reverse,

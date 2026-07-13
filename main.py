@@ -179,7 +179,6 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--card-renderer", choices=["inkscape", "resvg"], default=config["card_renderer"], help="SVG-to-PNG renderer")
     parser.add_argument("--resvg", default=config["resvg"], help="Path to the rsvg-convert executable")
     parser.add_argument("--yt-dlp", default=config["yt_dlp"], help="Path to the yt-dlp executable")
-    parser.add_argument("--gdown", default=config["gdown"], help="Path to the gdown executable")
     parser.add_argument("--ffmpeg", default=config["ffmpeg"], help="Path to the ffmpeg executable")
     parser.add_argument("--ffprobe", default=config["ffprobe"], help="Path to the ffprobe executable")
 
@@ -202,7 +201,6 @@ def setup_configure_args() -> argparse.ArgumentParser:
     parser.add_argument("--card-renderer", choices=["inkscape", "resvg"], default=argparse.SUPPRESS)
     parser.add_argument("--resvg", default=argparse.SUPPRESS)
     parser.add_argument("--yt-dlp", default=argparse.SUPPRESS)
-    parser.add_argument("--gdown", default=argparse.SUPPRESS)
     parser.add_argument("--ffmpeg", default=argparse.SUPPRESS)
     parser.add_argument("--ffprobe", default=argparse.SUPPRESS)
     return parser
@@ -260,7 +258,6 @@ def main() -> None:
         card_renderer=args.card_renderer,
         resvg=args.resvg,
         yt_dlp=args.yt_dlp,
-        gdown=args.gdown,
         only_straight=args.direct,
         only_reverse=args.reverse,
         upload_recaps=args.upload_recaps,

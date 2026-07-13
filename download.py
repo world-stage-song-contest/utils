@@ -12,6 +12,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from gdown.download import download as gdown_download
+
 import common
 
 RECAP_MEDIA_TYPES = {"v", "a"}
@@ -200,7 +202,12 @@ def fetch(url: str, media_type: str, destination: Path, args: common.Args) -> No
             command.extend(["--ffmpeg-location", args.ffmpeg])
         common.run([*command, "-o", str(destination), url])
     elif match := _GDRIVE_RE.search(url):
-        common.run([args.gdown, "--id", match.group(1), "-O", str(destination)])
+        try:
+            output = gdown_download(id=match.group(1), output=str(destination), quiet=True)
+        except Exception as exc:
+            raise RuntimeError(f"Could not download Google Drive file {match.group(1)}: {exc}") from exc
+        if output is None or not destination.exists():
+            raise RuntimeError(f"Google Drive download did not create expected file: {destination}")
     else:
         download_direct(url, destination)
 

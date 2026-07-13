@@ -98,8 +98,7 @@ def exec(args: common.Args) -> None:
             app_cache.initialize_database()
             s3_client = prepare.create_s3_client(s3_config)
         except RuntimeError as exc:
-            print(f"Error: recap upload is enabled but S3 is unavailable: {exc}", file=common.ERR_HANDLE)
-            sys.exit(1)
+            print(f"S3 is unavailable; continuing without recap uploads: {exc}", file=common.ERR_HANDLE)
 
     start = time.time()
     # Download videos
@@ -160,7 +159,7 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--cleanup", '-c', action='store_true', help="Cleanup temporary files after processing")
     parser.add_argument("--only-direct", '-d', default=False, action="store_true", dest="direct", help="Only create a straight recap")
     parser.add_argument("--only-reverse", '-r', default=False, action="store_true", dest="reverse", help="Only create a reverse recap")
-    parser.add_argument("--upload-recaps", action=argparse.BooleanOptionalAction, default=True, help="Upload recaps to the configured S3 bucket")
+    parser.add_argument("--upload-recaps", action=argparse.BooleanOptionalAction, default=prepare.s3_configured(), help="Upload recaps to the configured S3 bucket")
     parser.add_argument("--inkscape", default=config["inkscape"], help="Path to the inkscape executable")
     parser.add_argument("--card-renderer", choices=["inkscape", "resvg"], default=config["card_renderer"], help="SVG-to-PNG renderer")
     parser.add_argument("--resvg", default=config["resvg"], help="Path to the rsvg-convert executable")

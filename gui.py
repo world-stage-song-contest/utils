@@ -49,6 +49,7 @@ class ConfigPanel(scrolled.ScrolledPanel):
         self.add_text_row(root, "FPS", "fps", "60")
         self.add_radio(root, "Recaps", "recap_mode", [label for _value, label in gui_common.RECAP_MODES])
         self.add_checkbox(root, "Upload recaps to configured S3", "upload_recaps", True)
+        self.refresh_upload_availability()
 
         self.run_button = wx.Button(self, label="Run recap maker")
         self.run_button.Bind(wx.EVT_BUTTON, self.run)
@@ -100,11 +101,20 @@ class ConfigPanel(scrolled.ScrolledPanel):
         self.values[name] = control
         self.add_row(root, wx.StaticText(self, label=label), control, lambda: self.pick_directory(control))
 
-    def add_checkbox(self, root, label: str, name: str, value: bool) -> None:
+    def add_checkbox(self, root, label: str, name: str, value: bool) -> wx.CheckBox:
         control = wx.CheckBox(self, label=label)
         control.SetValue(value)
         self.values[name] = control
         root.Add(control, 0, wx.LEFT | wx.RIGHT | wx.TOP, 12)
+        return control
+
+    def refresh_upload_availability(self) -> None:
+        control = cast(wx.CheckBox, self.values["upload_recaps"])
+        available = prepare.s3_configured()
+        control.SetValue(available)
+        control.Enable(available)
+        if not available:
+            control.SetToolTip("Configure S3 in Settings to enable recap uploads.")
 
     def add_radio(self, root, label: str, name: str, choices: list[str]) -> None:
         control = wx.RadioBox(self, label=label, choices=choices, majorDimension=1, style=wx.RA_SPECIFY_ROWS)
@@ -387,7 +397,7 @@ class PreparePanel(scrolled.ScrolledPanel):
         self.add_directory(root, "Output directory (optional)", "output_directory")
 
         self.add_section(root, "Options")
-        self.add_checkbox(root, "Upload to configured S3", "upload", True)
+        self.upload_check = self.add_checkbox(root, "Upload to configured S3", "upload", True)
         self.subtitles_check = self.add_checkbox(root, "Include subtitles", "subtitles", False)
         self.add_checkbox(root, "Overwrite existing output files", "overwrite_existing", True)
         self.add_checkbox(root, "Clear upload cache before preparing", "clear_upload_cache", False)
@@ -398,6 +408,7 @@ class PreparePanel(scrolled.ScrolledPanel):
         self.status = wx.StaticText(
             self, label="S3 upload settings are managed in the Settings tab."
         )
+        self.refresh_upload_availability()
         root.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
         root.Add(wx.StaticText(self, label="Output"), 0, wx.LEFT | wx.RIGHT, 10)
         self.output_box = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
@@ -463,6 +474,13 @@ class PreparePanel(scrolled.ScrolledPanel):
         self.values[name] = control
         root.Add(control, 0, wx.LEFT | wx.RIGHT | wx.TOP, 12)
         return control
+
+    def refresh_upload_availability(self) -> None:
+        available = prepare.s3_configured()
+        self.upload_check.SetValue(available)
+        self.upload_check.Enable(available)
+        if not available:
+            self.upload_check.SetToolTip("Configure S3 in Settings to enable uploads.")
 
     def update_mode(self, _event=None) -> None:
         is_audio = cast(wx.Choice, self.values["mode"]).GetStringSelection() == "audio"
@@ -565,7 +583,7 @@ class SettingsPanel(scrolled.ScrolledPanel):
             s3 = prepare.load_s3_config()
             endpoint, bucket, profile = s3.endpoint_url, s3.bucket, s3.profile
         except RuntimeError:
-            endpoint, bucket, profile = "", "worldstage", "r2"
+            endpoint, bucket, profile = "", "", ""
         self.s3_endpoint = wx.TextCtrl(self, value=endpoint)
         self.s3_bucket = wx.TextCtrl(self, value=bucket)
         self.s3_profile = wx.TextCtrl(self, value=profile)
@@ -643,14 +661,19 @@ class RecapFrame(wx.Frame):
         super().__init__(None, title="World Stage Recap Maker", size=wx.Size(1100, 820))
         self.SetMinSize(wx.Size(820, 620))
         notebook = wx.Notebook(self)
-        config = ConfigPanel(notebook)
-        editor = ShowEditorPanel(notebook, config.set_input_path)
-        prepare_panel = PreparePanel(notebook)
-        settings = SettingsPanel(notebook, config.apply_persistent_settings)
-        notebook.AddPage(config, "Configuration")
+        self.config_panel = ConfigPanel(notebook)
+        editor = ShowEditorPanel(notebook, self.config_panel.set_input_path)
+        self.prepare_panel = PreparePanel(notebook)
+        settings = SettingsPanel(notebook, self.apply_settings)
+        notebook.AddPage(self.config_panel, "Configuration")
         notebook.AddPage(editor, "Show editor")
-        notebook.AddPage(prepare_panel, "Prepare media")
+        notebook.AddPage(self.prepare_panel, "Prepare media")
         notebook.AddPage(settings, "Settings")
+
+    def apply_settings(self, settings: dict[str, str | bool]) -> None:
+        self.config_panel.apply_persistent_settings(settings)
+        self.config_panel.refresh_upload_availability()
+        self.prepare_panel.refresh_upload_availability()
 
 
 def start() -> None:

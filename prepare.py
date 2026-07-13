@@ -71,6 +71,15 @@ def load_s3_config() -> S3Config:
     return config
 
 
+def s3_configured() -> bool:
+    """Return whether uploads can be used without raising an error."""
+    try:
+        load_s3_config()
+    except RuntimeError:
+        return False
+    return True
+
+
 @dataclass
 class SongData:
     audio_path: Path
@@ -231,10 +240,10 @@ def setup_args() -> argparse.ArgumentParser:
 
     configure_s3 = subparsers.add_parser("configure-s3", help="Save S3 upload settings for future runs")
     configure_s3.add_argument("--endpoint-url", required=True, help="S3-compatible endpoint URL")
-    configure_s3.add_argument("--bucket", default="worldstage", help="Bucket name (default: worldstage)")
-    configure_s3.add_argument("--profile", default="r2", help="AWS CLI profile name (default: r2)")
+    configure_s3.add_argument("--bucket", default="", help="Bucket name")
+    configure_s3.add_argument("--profile", default="", help="AWS profile name")
 
-    parser.set_defaults(upload=True)
+    parser.set_defaults(upload=s3_configured())
 
     return parser
 
@@ -351,9 +360,12 @@ def execute(request: PrepareRequest) -> None:
             app_cache.clear_upload_cache()
             print(f"Cleared upload cache records in {app_cache.database_path()}", file=ERR_HANDLE)
 
+    upload_enabled = request.upload and s3_configured()
+    if request.upload and not upload_enabled:
+        qprint("S3 is not configured; continuing without uploads.")
     s3_config = None
     s3_client = None
-    if request.upload:
+    if upload_enabled:
         s3_config = load_s3_config()
         if not request.dry_run_mode:
             app_cache.initialize_database()
@@ -385,7 +397,7 @@ def execute(request: PrepareRequest) -> None:
     duration = 0 if dry_run.get() else media.duration(media_path)
     json_path = make_json(song, duration, request.mode)
 
-    if request.upload:
+    if upload_enabled:
         assert s3_config is not None
         upload(media_path, s3_config, s3_client)
         upload(json_path, s3_config, s3_client)

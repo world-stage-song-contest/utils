@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# pyright: reportMissingImports=false
+
 import shlex
 import argparse, json, math, os, re, sys
 import subprocess as sp
@@ -7,7 +9,64 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Union
 
+from platformdirs import user_config_path
+
+import app_cache
+
 base_url = 'https://media.world-stage.org'
+APP_NAME = "world-stage-recap-maker"
+S3_CONFIG_FILENAME = "prepare-s3.json"
+
+
+@dataclass(frozen=True)
+class S3Config:
+    endpoint_url: str
+    bucket: str
+    profile: str
+
+
+def config_directory() -> Path:
+    return Path(user_config_path(APP_NAME, appauthor=False, ensure_exists=True))
+
+
+def s3_config_path() -> Path:
+    return config_directory() / S3_CONFIG_FILENAME
+
+
+def save_s3_config(config: S3Config) -> Path:
+    path = s3_config_path()
+    path.write_text(
+        json.dumps({"endpoint_url": config.endpoint_url, "bucket": config.bucket, "profile": config.profile}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def load_s3_config() -> S3Config:
+    path = s3_config_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"S3 configuration not found at {path}. Run 'prepare.py configure-s3 --endpoint-url URL' first."
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid S3 configuration in {path}: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Invalid S3 configuration in {path}: expected a JSON object")
+    try:
+        config = S3Config(
+            endpoint_url=str(data["endpoint_url"]).strip(),
+            bucket=str(data["bucket"]).strip(),
+            profile=str(data["profile"]).strip(),
+        )
+    except KeyError as exc:
+        raise RuntimeError(f"Invalid S3 configuration in {path}: missing {exc.args[0]!r}") from exc
+    if not all((config.endpoint_url, config.bucket, config.profile)):
+        raise RuntimeError(f"Invalid S3 configuration in {path}: values must not be empty")
+    return config
+
 
 cc_map = {
     "ab": "Scotland",
@@ -378,6 +437,7 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--upload", "-u", dest="upload", action="store_true", help="Upload the files (default)")
     parser.add_argument("--no-upload", "-U", dest="upload", action="store_false", help="Do not upload the files")
     parser.add_argument("--subtitles", "-s", action="store_true", help="Add a subtitle track. Must be in the same directory as the video file and have a .vtt extension")
+    parser.add_argument("--clear-upload-cache", action="store_true", help="Forget cached upload records before processing")
 
     subparsers = parser.add_subparsers(dest="mode", required=True)
 
@@ -393,6 +453,11 @@ def setup_args() -> argparse.ArgumentParser:
     video.add_argument("artist", type=str, help="The name of the song's artist")
     video.add_argument("title", type=str, help="The title of the song")
     video.add_argument("language", type=str, help="The language code of the song")
+
+    configure_s3 = subparsers.add_parser("configure-s3", help="Save S3 upload settings for future runs")
+    configure_s3.add_argument("--endpoint-url", required=True, help="S3-compatible endpoint URL")
+    configure_s3.add_argument("--bucket", default="worldstage", help="Bucket name (default: worldstage)")
+    configure_s3.add_argument("--profile", default="r2", help="AWS CLI profile name (default: r2)")
 
     parser.set_defaults(upload=True)
 
@@ -568,14 +633,18 @@ def make_json(song: SongData, duration: int, mode: str) -> Path:
 
     return json_path
 
-def upload(path: Path | None, endpoint_url: str):
+def upload(path: Path | None, config: S3Config):
     if path is None:
+        return
+
+    if not dry_run.get() and app_cache.is_cached_upload(path, config.endpoint_url, config.bucket):
+        qprint(f"Skipping unchanged upload: {path}")
         return
 
     cmd = [
         'aws', 's3', 'cp',
         str(path),
-        f's3://worldstage/{path.name}'
+        f's3://{config.bucket}/{path.name}'
     ]
 
     suffix = path.suffix.lower()
@@ -586,20 +655,39 @@ def upload(path: Path | None, endpoint_url: str):
         cmd += ['--content-type', 'audio/mp4']
 
     cmd += [
-        '--endpoint-url', endpoint_url,
-        '--profile', 'r2'
+        '--endpoint-url', config.endpoint_url,
+        '--profile', config.profile,
     ]
 
     run(cmd)
+    if not dry_run.get():
+        app_cache.store_upload(path, config.endpoint_url, config.bucket)
 
 def main() -> None:
-    endpoint_url = os.getenv('R2_ENDPOINT_URL')
-
-    if endpoint_url is None:
-        print('R2_ENDPOINT_URL not set', file=sys.stderr)
-        sys.exit(2)
-
     args = setup_args().parse_args()
+
+    if args.mode == "configure-s3":
+        path = save_s3_config(S3Config(args.endpoint_url, args.bucket, args.profile))
+        print(f"Saved S3 configuration to {path}")
+        return
+
+    if args.clear_upload_cache:
+        if args.dry_run:
+            qprint(f"Would clear upload records in {app_cache.database_path()}")
+        else:
+            app_cache.initialize_database()
+            app_cache.clear_upload_cache()
+            print(f"Cleared upload cache records in {app_cache.database_path()}", file=sys.stderr)
+
+    s3_config = None
+    if args.upload:
+        try:
+            s3_config = load_s3_config()
+            if not args.dry_run:
+                app_cache.initialize_database()
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            sys.exit(2)
 
     mode = args.mode
 
@@ -635,10 +723,11 @@ def main() -> None:
     json_path = make_json(song, duration, args.mode)
 
     if args.upload:
-        upload(media_path, endpoint_url)
-        upload(json_path, endpoint_url)
-        upload(song.image_path(), endpoint_url)
-        upload(song.subtitles_path(), endpoint_url)
+        assert s3_config is not None
+        upload(media_path, s3_config)
+        upload(json_path, s3_config)
+        upload(song.image_path(), s3_config)
+        upload(song.subtitles_path(), s3_config)
 
 if __name__ == '__main__':
     main()

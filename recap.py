@@ -7,10 +7,10 @@ import hashlib
 import json
 import multiprocessing as mp
 import re
-import sqlite3
 import time
 from urllib.parse import urlparse
 
+import app_cache
 import common
 
 RECAP_MEDIA_TYPES = {"v", "a"}
@@ -62,29 +62,6 @@ class RenderJob:
     fingerprint: str
 
 
-def cache_database_path(tmpdir: Path) -> Path:
-    return tmpdir / "recap-cache.sqlite3"
-
-
-def initialize_cache(database: Path) -> None:
-    with sqlite3.connect(database, timeout=30) as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS outputs (path TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)")
-
-
-def cached_fingerprint(database: Path, output: Path) -> str | None:
-    with sqlite3.connect(database, timeout=30) as conn:
-        row = conn.execute("SELECT fingerprint FROM outputs WHERE path = ?", (str(output.absolute()),)).fetchone()
-    return None if row is None else row[0]
-
-
-def store_fingerprint(database: Path, output: Path, fingerprint: str) -> None:
-    with sqlite3.connect(database, timeout=30) as conn:
-        conn.execute("""
-            INSERT INTO outputs (path, fingerprint) VALUES (?, ?)
-            ON CONFLICT(path) DO UPDATE SET fingerprint = excluded.fingerprint
-        """, (str(output.absolute()), fingerprint))
-
-
 def file_identity(path: Path) -> tuple[str, int, int]:
     stat = path.resolve().stat()
     return (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
@@ -92,7 +69,10 @@ def file_identity(path: Path) -> tuple[str, int, int]:
 
 def output_fingerprint(rows: list[Data], args: common.Args, reverse: bool) -> str:
     value = {
-        "version": 1,
+        # Version 2 fixes audio artwork: attached pictures are now opened as
+        # an unseeked visual input, rather than being discarded by the audio
+        # snippet seek that starts after their timestamp-zero frame.
+        "version": 2,
         "reverse": reverse,
         "size": args.size,
         "fps": args.fps,
@@ -261,9 +241,7 @@ def build_graph(rows: list[Data], args: common.Args) -> tuple[list[str], str, in
             "-ss", hms(start), "-t", hms(duration), "-i", str(row.path),
         ])
 
-        if row.media_type == "a" and not probe.has_picture:
-            if row.cover_path is None:
-                raise RuntimeError(f"Missing image_link cover for {row.path}")
+        if row.media_type == "a" and row.cover_path is not None and row.cover_path.exists():
             visual_input_index = input_count
             input_count += 1
             input_args.extend([
@@ -271,8 +249,11 @@ def build_graph(rows: list[Data], args: common.Args) -> tuple[list[str], str, in
             ])
             visual_input = f"[{visual_input_index}:v:0]trim=duration={duration_text},setpts=PTS-STARTPTS"
         elif row.media_type == "a":
+            visual_input_index = input_count
+            input_count += 1
+            input_args.extend(["-i", str(row.path)])
             visual_input = (
-                f"[{media_input}:v:0]loop=loop=-1:size=1:start=0,"
+                f"[{visual_input_index}:v:0]loop=loop=-1:size=1:start=0,"
                 f"trim=duration={duration_text},setpts=PTS-STARTPTS"
             )
         else:
@@ -349,7 +330,7 @@ def render(job: RenderJob, args: common.Args) -> tuple[str, Path]:
         "-movflags", "+faststart", "-f", "mp4", str(temp_out),
     ])
     temp_out.rename(job.output)
-    store_fingerprint(cache_database_path(args.tmpdir), job.output, job.fingerprint)
+    app_cache.store_recap_fingerprint(job.output, job.fingerprint)
     return job.key, job.output
 
 
@@ -418,16 +399,15 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
     args.output.mkdir(parents=True, exist_ok=True)
     scratch = args.tmpdir / "metadata"
     scratch.mkdir(parents=True, exist_ok=True)
-    output_cache = cache_database_path(args.tmpdir)
-    initialize_cache(output_cache)
+    app_cache.initialize_database()
     jobs: list[RenderJob] = []
 
     def add_jobs(data: dict[str, list[Data]], is_reverse: bool) -> None:
         suffix = "" if is_reverse else "s"
         for key, rows in data.items():
-            output = args.output / f"{key}{suffix}.mp4"
+            output = args.output / f"{key}{suffix}.mov"
             fingerprint = output_fingerprint(rows, args, is_reverse)
-            if output.exists() and cached_fingerprint(output_cache, output) == fingerprint:
+            if output.exists() and app_cache.cached_recap_fingerprint(output) == fingerprint:
                 print(f"[recap] {output} exists, skipping", file=common.OUT_HANDLE)
                 continue
             metadata = scratch / f"{output.stem}.meta.txt"

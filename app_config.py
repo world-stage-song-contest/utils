@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 import json
+import sys
 
 from platformdirs import user_config_path
 
@@ -47,7 +48,9 @@ def _read_config() -> dict[str, object]:
     except FileNotFoundError:
         return {}
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid configuration in {path}: {exc}") from exc
+        message = f"Invalid configuration in {path}: {exc}"
+        print(message, file=sys.stderr)
+        raise RuntimeError(message) from exc
     if not isinstance(data, dict):
         raise RuntimeError(f"Invalid configuration in {path}: expected a JSON object")
     return data
@@ -96,7 +99,9 @@ def s3_settings() -> dict[str, str] | None:
     except FileNotFoundError:
         return None
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid legacy S3 configuration in {legacy_path}: {exc}") from exc
+        message = f"Invalid legacy S3 configuration in {legacy_path}: {exc}"
+        print(message, file=sys.stderr)
+        raise RuntimeError(message) from exc
     if not isinstance(legacy, dict):
         raise RuntimeError(f"Invalid legacy S3 configuration in {legacy_path}: expected a JSON object")
     values = {key: str(legacy.get(key, "")).strip() for key in ("endpoint_url", "bucket", "profile")}

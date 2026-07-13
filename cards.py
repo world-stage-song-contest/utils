@@ -95,10 +95,7 @@ def read_input(path: Path) -> list[Data]:
         if typ not in {"v", "a"}:
             continue
         rro = row["ro"].strip()
-        try:
-            ro = f"{int(rro):02d}"
-        except ValueError:
-            ro = rro
+        ro = f"{int(rro):02d}"
         show = row["show"].strip()
         country = row["cc"].strip().upper()
         country_name = row["country"].strip()
@@ -110,11 +107,11 @@ def read_input(path: Path) -> list[Data]:
 width, height = 1980, 1080
 
 
-def png_size(path: Path) -> tuple[int, int] | None:
+def png_size(path: Path) -> tuple[int, int]:
     with path.open("rb") as f:
         header = f.read(24)
     if header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
-        return None
+        raise ValueError(f"Invalid PNG header: {path}")
     return struct.unpack(">II", header[16:24])
 
 

@@ -170,7 +170,9 @@ def world_stage_etag(url: str) -> str | None:
         with urlopen(request, timeout=60) as response:
             return response.headers.get("ETag")
     except (HTTPError, URLError) as exc:
-        raise RuntimeError(f"Could not read ETag for {url}: {exc}") from exc
+        message = f"Could not read ETag for {url}: {exc}"
+        print(message, file=common.ERR_HANDLE)
+        raise RuntimeError(message) from exc
 
 
 def download_direct(url: str, destination: Path) -> None:
@@ -187,7 +189,9 @@ def download_direct(url: str, destination: Path) -> None:
             with destination.open(mode) as output:
                 shutil.copyfileobj(response, output, length=1024 * 1024)
     except (HTTPError, URLError) as exc:
-        raise RuntimeError(f"Could not download {url}: {exc}") from exc
+        message = f"Could not download {url}: {exc}"
+        print(message, file=common.ERR_HANDLE)
+        raise RuntimeError(message) from exc
 
 
 def object_path(sources_dir: Path, key: str, suffix: str) -> Path:
@@ -232,12 +236,16 @@ def fetch(url: str, media_type: str, destination: Path, args: common.Args) -> No
             with YoutubeDL(cast(Any, options)) as downloader:
                 downloader.download([url])
         except Exception as exc:
-            raise RuntimeError(f"Could not download YouTube media {url}: {exc}") from exc
+            message = f"Could not download YouTube media {url}: {exc}"
+            print(message, file=common.ERR_HANDLE)
+            raise RuntimeError(message) from exc
     elif match := _GDRIVE_RE.search(url):
         try:
             output = gdown_download(id=match.group(1), output=str(destination), quiet=True)
         except Exception as exc:
-            raise RuntimeError(f"Could not download Google Drive file {match.group(1)}: {exc}") from exc
+            message = f"Could not download Google Drive file {match.group(1)}: {exc}"
+            print(message, file=common.ERR_HANDLE)
+            raise RuntimeError(message) from exc
         if output is None or not destination.exists():
             raise RuntimeError(f"Google Drive download did not create expected file: {destination}")
     else:
@@ -310,10 +318,7 @@ def main(args: common.Args) -> common.Clips:
         if media_type not in RECAP_MEDIA_TYPES:
             continue
         raw_ro = row["ro"].strip()
-        try:
-            ro = f"{int(raw_ro):02d}"
-        except ValueError:
-            ro = raw_ro
+        ro = f"{int(raw_ro):02d}"
         value = Data(
             ro=ro, show=row["show"].strip(), country=row["cc"].strip().upper(),
             media_link=row["media_link"].strip(), media_type=media_type,

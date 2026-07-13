@@ -179,7 +179,7 @@ class ConfigPanel(scrolled.ScrolledPanel):
             args = gui_common.build_args(self.configuration_values())
         except (KeyError, ValueError, OSError) as exc:
             self.status.SetLabel(f"Cannot start: {exc}")
-            return
+            raise
         self.output_box.Clear()
         self.process = mp.Process(target=gui_common.run_recap_process, args=(args, self.output_queue))
         self.process.start()
@@ -355,7 +355,7 @@ class ShowEditorPanel(wx.Panel):
             self.entries = gui_common.load_show(path)
         except (OSError, ValueError) as exc:
             self.status.SetLabel(f"Could not load show: {exc}")
-            return
+            raise
         self.clear_form()
         self.refresh_table()
         self.status.SetLabel(f"Loaded {len(self.entries)} entries from {path}.")
@@ -519,7 +519,7 @@ class PreparePanel(scrolled.ScrolledPanel):
             request = gui_common.build_prepare_request(self.request_values())
         except (KeyError, ValueError, OSError) as exc:
             self.status.SetLabel(f"Cannot start: {exc}")
-            return
+            raise
         self.output_box.Clear()
         self.process = mp.Process(target=gui_common.run_prepare_process, args=(request, self.output_queue))
         self.process.start()
@@ -582,7 +582,7 @@ class SettingsPanel(scrolled.ScrolledPanel):
         try:
             s3 = prepare.load_s3_config()
             endpoint, bucket, profile = s3.endpoint_url, s3.bucket, s3.profile
-        except RuntimeError:
+        except prepare.S3NotConfigured:
             endpoint, bucket, profile = "", "", ""
         self.s3_endpoint = wx.TextCtrl(self, value=endpoint)
         self.s3_bucket = wx.TextCtrl(self, value=bucket)
@@ -651,7 +651,7 @@ class SettingsPanel(scrolled.ScrolledPanel):
                 prepare.save_s3_config(prepare.S3Config(**s3_values))
         except (OSError, RuntimeError, ValueError) as exc:
             self.status.SetLabel(f"Could not save settings: {exc}")
-            return
+            raise
         self.on_saved(app_config.recap_settings())
         self.status.SetLabel(f"Saved persistent settings to {path}.")
 

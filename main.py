@@ -97,7 +97,7 @@ def exec(args: common.Args) -> None:
             s3_config = prepare.load_s3_config()
             app_cache.initialize_database()
             s3_client = prepare.create_s3_client(s3_config)
-        except RuntimeError as exc:
+        except prepare.S3NotConfigured as exc:
             print(f"S3 is unavailable; continuing without recap uploads: {exc}", file=common.ERR_HANDLE)
 
     start = time.time()

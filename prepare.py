@@ -33,6 +33,10 @@ class S3Config:
     profile: str
 
 
+class S3NotConfigured(RuntimeError):
+    """Raised when optional S3 settings have not been supplied."""
+
+
 @dataclass(frozen=True)
 class PrepareRequest:
     """The GUI- and CLI-independent description of one preparation job."""
@@ -61,7 +65,7 @@ def save_s3_config(config: S3Config) -> Path:
 def load_s3_config() -> S3Config:
     data = app_config.s3_settings()
     if data is None:
-        raise RuntimeError(
+        raise S3NotConfigured(
             f"S3 configuration not found at {app_config.config_path()}. "
             "Run 'prepare.py configure-s3 --endpoint-url URL' first."
         )
@@ -75,7 +79,7 @@ def s3_configured() -> bool:
     """Return whether uploads can be used without raising an error."""
     try:
         load_s3_config()
-    except RuntimeError:
+    except S3NotConfigured:
         return False
     return True
 
@@ -209,7 +213,9 @@ def run(cmd: list[str], capture: bool = False) -> sp.CompletedProcess:
     except sp.CalledProcessError as e:
         out = (e.stdout or b"").decode("utf-8", "replace")
         err = (e.stderr or b"").decode("utf-8", "replace")
-        raise RuntimeError(f"command failed: {cmd}\nstdout:\n{out}\nstderr:\n{err}")
+        message = f"command failed: {cmd}\nstdout:\n{out}\nstderr:\n{err}"
+        print(message, file=ERR_HANDLE)
+        raise RuntimeError(message) from e
 
 def setup_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Prepare files for the CDN.")
@@ -310,7 +316,9 @@ def create_s3_client(config: S3Config):
         session = boto3.Session(profile_name=config.profile)
         return session.client("s3", endpoint_url=config.endpoint_url)
     except BotoCoreError as exc:
-        raise RuntimeError(f"Could not initialize S3 profile {config.profile!r}: {exc}") from exc
+        message = f"Could not initialize S3 profile {config.profile!r}: {exc}"
+        print(message, file=ERR_HANDLE)
+        raise RuntimeError(message) from exc
 
 
 def upload(path: Path | None, config: S3Config, client, object_name: str | None = None) -> None:
@@ -319,7 +327,7 @@ def upload(path: Path | None, config: S3Config, client, object_name: str | None 
     object_name = object_name or path.name
 
     if not dry_run.get() and app_cache.is_cached_upload(path, config.endpoint_url, config.bucket, object_name):
-        qprint(f"Skipping unchanged upload: {path}")
+        print(f"Skipping unchanged upload: {path}", file=OUT_HANDLE)
         return
 
     suffix = path.suffix.lower()
@@ -329,7 +337,7 @@ def upload(path: Path | None, config: S3Config, client, object_name: str | None 
     elif suffix == '.m4a':
         extra_args['ContentType'] = 'audio/mp4'
 
-    qprint(f"Uploading {path} to s3://{config.bucket}/{object_name}")
+    print(f"Uploading {path} to s3://{config.bucket}/{object_name}", file=OUT_HANDLE)
     if dry_run.get():
         return
     if client is None:
@@ -340,7 +348,9 @@ def upload(path: Path | None, config: S3Config, client, object_name: str | None 
         else:
             client.upload_file(str(path), config.bucket, object_name)
     except (BotoCoreError, ClientError, OSError) as exc:
-        raise RuntimeError(f"Could not upload {path} to s3://{config.bucket}/{object_name}: {exc}") from exc
+        message = f"Could not upload {path} to s3://{config.bucket}/{object_name}: {exc}"
+        print(message, file=ERR_HANDLE)
+        raise RuntimeError(message) from exc
     app_cache.store_upload(path, config.endpoint_url, config.bucket, object_name)
 
 def execute(request: PrepareRequest) -> None:
@@ -435,7 +445,7 @@ def main() -> None:
         execute(request)
     except (OSError, RuntimeError, ValueError) as exc:
         print(exc, file=ERR_HANDLE)
-        sys.exit(2)
+        raise
 
 if __name__ == '__main__':
     main()

@@ -84,10 +84,7 @@ class FFmpeg:
             self.probe_executable, "-v", "error", "-show_entries",
             "stream=codec_type:stream_disposition=attached_pic", "-of", "json", str(path),
         ])
-        try:
-            streams = json.loads(_text(result.stdout)).get("streams", [])
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Cannot read stream data from {path}") from exc
+        streams = json.loads(_text(result.stdout)).get("streams", [])
 
         has_audio = any(stream.get("codec_type") == "audio" for stream in streams)
         has_picture = any(
@@ -113,12 +110,9 @@ class FFmpeg:
         stream = streams[0]
         width = int(stream["width"])
         height = int(stream["height"])
-        try:
-            sar_width, sar_height = map(int, stream.get("sample_aspect_ratio", "1:1").split(":"))
-            if sar_width <= 0 or sar_height <= 0:
-                raise ValueError
-        except ValueError:
-            sar_width, sar_height = (1, 1)
+        sar_width, sar_height = map(int, stream["sample_aspect_ratio"].split(":"))
+        if sar_width <= 0 or sar_height <= 0:
+            raise ValueError(f"Invalid sample aspect ratio for {path}: {stream['sample_aspect_ratio']!r}")
         return VideoProperties((width * sar_width) / (height * sar_height), height)
 
     def display_aspect(self, path: Path) -> float:
@@ -129,10 +123,7 @@ class FFmpeg:
             self.probe_executable, "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", str(path),
         ], capture=True)
-        try:
-            return math.ceil(float(_text(result.stdout).strip()))
-        except ValueError as exc:
-            raise RuntimeError(f"ffprobe returned non-float duration: {_text(result.stdout).strip()!r}") from exc
+        return math.ceil(float(_text(result.stdout).strip()))
 
     def loudnorm_filter(self, path: Path, start: float, duration: float, mode: str) -> str:
         if mode == "none":

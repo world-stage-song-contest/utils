@@ -68,9 +68,9 @@ def run(cmd: list[str] | str, *, capture: bool = True) -> sp.CompletedProcess[st
             check=True,
         )
     except sp.CalledProcessError as e:
-        raise RuntimeError(
-            f"\n[cmd] {' '.join(map(shlex.quote, cmd))}\n[stderr]\n{e.stderr or ''}"
-        ) from None
+        message = f"\n[cmd] {' '.join(map(shlex.quote, cmd))}\n[stderr]\n{e.stderr or ''}"
+        print(message, file=ERR_HANDLE)
+        raise RuntimeError(message) from e
 
 # show, ro
 Clips = dict[tuple[str, str], dict[str, Path]]

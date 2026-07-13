@@ -53,6 +53,7 @@ def run_recap_process(args: common.Args, output_queue) -> None:
         main.exec(args)
     except BaseException:
         traceback.print_exc(file=common.ERR_HANDLE)
+        raise
 
 
 def build_prepare_request(values: Mapping[str, object]) -> prepare.PrepareRequest:
@@ -90,6 +91,7 @@ def run_prepare_process(request: prepare.PrepareRequest, output_queue) -> None:
         prepare.execute(request)
     except BaseException:
         traceback.print_exc(file=prepare.ERR_HANDLE)
+        raise
 
 
 def recap_mode_from_label(label: str) -> str:

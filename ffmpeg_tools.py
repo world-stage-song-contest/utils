@@ -22,6 +22,12 @@ class MediaProbe:
 
 
 @dataclass(frozen=True)
+class VideoProperties:
+    display_aspect: float
+    height: int
+
+
+@dataclass(frozen=True)
 class MediaTags:
     title: str
     artist: str
@@ -96,7 +102,7 @@ class FFmpeg:
         )
         return MediaProbe(has_audio=has_audio, has_picture=has_picture, has_video=has_video)
 
-    def display_aspect(self, path: Path) -> float:
+    def video_properties(self, path: Path) -> VideoProperties:
         result = self.run([
             self.probe_executable, "-v", "error", "-select_streams", "v:0",
             "-show_entries", "stream=width,height,sample_aspect_ratio", "-of", "json", str(path),
@@ -113,7 +119,10 @@ class FFmpeg:
                 raise ValueError
         except ValueError:
             sar_width, sar_height = (1, 1)
-        return (width * sar_width) / (height * sar_height)
+        return VideoProperties((width * sar_width) / (height * sar_height), height)
+
+    def display_aspect(self, path: Path) -> float:
+        return self.video_properties(path).display_aspect
 
     def duration(self, path: Path) -> int:
         result = self.run([

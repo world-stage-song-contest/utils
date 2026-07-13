@@ -83,7 +83,7 @@ class Args:
     browser: str | None
     po_token: str | None
     size: tuple[int, int] | None
-    auto_height: int
+    default_height: int
     fps: int
     fade_duration: float
     av1_preset: int

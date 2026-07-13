@@ -80,9 +80,13 @@ def initialize_cache(database: Path) -> None:
                 etag TEXT,
                 object_path TEXT NOT NULL,
                 display_aspect REAL,
+                display_height INTEGER,
                 updated_at INTEGER NOT NULL
             )
         """)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(source_cache)")}
+        if "display_height" not in columns:
+            conn.execute("ALTER TABLE source_cache ADD COLUMN display_height INTEGER")
         if "source_cache_legacy" in {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }:
@@ -134,22 +138,25 @@ def write_cache_record(
         """, (key, url, etag, str(object_path.resolve()), int(time.time())))
 
 
-def cached_display_aspect(sources_dir: Path, media_path: Path) -> float | None:
+def cached_display_properties(sources_dir: Path, media_path: Path) -> tuple[float, int] | None:
     database = cache_database_path(sources_dir)
     with sqlite3.connect(database, timeout=30) as conn:
         row = conn.execute(
-            "SELECT display_aspect FROM source_cache WHERE object_path = ?",
+            "SELECT display_aspect, display_height FROM source_cache WHERE object_path = ?",
             (str(media_path.resolve()),),
         ).fetchone()
-    return None if row is None else row[0]
+    if row is None or row[0] is None or row[1] is None:
+        return None
+    return float(row[0]), int(row[1])
 
-
-def store_display_aspect(sources_dir: Path, media_path: Path, aspect: float) -> None:
+def store_display_properties(
+    sources_dir: Path, media_path: Path, aspect: float, height: int,
+) -> None:
     database = cache_database_path(sources_dir)
     with sqlite3.connect(database, timeout=30) as conn:
         conn.execute(
-            "UPDATE source_cache SET display_aspect = ? WHERE object_path = ?",
-            (aspect, str(media_path.resolve())),
+            "UPDATE source_cache SET display_aspect = ?, display_height = ? WHERE object_path = ?",
+            (aspect, height, str(media_path.resolve())),
         )
 
 

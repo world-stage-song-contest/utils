@@ -29,14 +29,15 @@ def even(value: float) -> int:
     return max(2, int(round(value / 2) * 2))
 
 
-def video_display_aspect(path: Path, args: common.Args) -> float:
-    cached = download.cached_display_aspect(args.vidsdir, path)
+def video_properties(path: Path, args: common.Args) -> tuple[float, int]:
+    cached = download.cached_display_properties(args.vidsdir, path)
     if cached is not None:
         return cached
     media = ffmpeg_tools.FFmpeg(args.ffmpeg, args.ffprobe, common.run)
-    aspect = media.display_aspect(path)
-    download.store_display_aspect(args.vidsdir, path, aspect)
-    return aspect
+    properties = media.video_properties(path)
+    result = properties.display_aspect, properties.height
+    download.store_display_properties(args.vidsdir, path, *result)
+    return result
 
 
 def resolve_output_size(clips: common.Clips, args: common.Args) -> None:
@@ -44,7 +45,7 @@ def resolve_output_size(clips: common.Clips, args: common.Args) -> None:
     if args.size is not None:
         return
 
-    aspects: list[tuple[float, Path]] = []
+    videos: list[tuple[float, int, Path]] = []
     seen: set[Path] = set()
     for row in common.load_rows(args.csv):
         if row["type"] != "v":
@@ -58,18 +59,21 @@ def resolve_output_size(clips: common.Clips, args: common.Args) -> None:
         if path in seen:
             continue
         seen.add(path)
-        aspects.append((video_display_aspect(path, args), path))
+        aspect, height = video_properties(path, args)
+        videos.append((aspect, height, path))
 
-    height = even(args.auto_height)
-    if aspects:
-        aspect, source = max(aspects, key=lambda value: value[0])
+    if videos:
+        aspect, _height, source = max(videos, key=lambda value: value[0])
+        _source_aspect, source_height, height_source = max(videos, key=lambda value: value[1])
+        height = max(2, source_height - source_height % 2)
         args.size = (even(height * aspect), height)
         print(
-            f"Selected output size {args.size[0]}x{args.size[1]} from source aspect ratio "
-            f"{aspect:.5f} ({source}).",
+            f"Selected output size {args.size[0]}x{args.size[1]} from widest source aspect ratio "
+            f"{aspect:.5f} ({source}) and tallest source height {source_height} ({height_source}).",
             file=common.OUT_HANDLE,
         )
     else:
+        height = even(args.default_height)
         args.size = (even(height * 16 / 9), height)
         print(
             f"No video entries found; using fallback output size {args.size[0]}x{args.size[1]}.",
@@ -142,7 +146,7 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--browser", '-b', default=config["browser"] or None, help="Browser to use for downloads")
     parser.add_argument("--po-token", '-p', default=config["po_token"], help="PO token for YouTube downloads")
     parser.add_argument("--size", '-s', type=common.parse_size, help="Output size WxH (overrides automatic aspect ratio)")
-    parser.add_argument("--auto-height", type=int, default=720, help="Output height when selecting an automatic aspect ratio")
+    parser.add_argument("--default-height", type=int, default=480, help="Default output height when all entries are audio")
     parser.add_argument("--fps", '-F', type=int, default=60, help="Output video FPS")
     parser.add_argument("--fade-duration", '-f', type=float, default=0.25, help="Fade duration in seconds")
     parser.add_argument("--av1-preset", type=int, default=config["av1_preset"], help="SVT-AV1 speed preset (higher is faster)")
@@ -220,7 +224,7 @@ def main() -> None:
         browser=args.browser,
         po_token=args.po_token,
         size=args.size,
-        auto_height=args.auto_height,
+        default_height=args.default_height,
         fps=args.fps,
         fade_duration=args.fade_duration,
         av1_preset=args.av1_preset,

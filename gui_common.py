@@ -118,7 +118,7 @@ def build_args(values: Mapping[str, object]) -> common.Args:
         po_token=text("po_token") or None,
         style=text("style"),
         size=common.parse_size(size_text) if size_text else None,
-        auto_height=int(text("auto_height")),
+        default_height=int(text("default_height")),
         output=Path(text("output")),
         fps=int(text("fps")),
         fade_duration=float(text("fade")),

@@ -9,6 +9,7 @@ import traceback
 
 import common
 import main
+import prepare
 
 
 SHOW_FIELDS = (
@@ -51,6 +52,40 @@ def run_recap_process(args: common.Args, output_queue) -> None:
         main.exec(args)
     except BaseException:
         traceback.print_exc(file=common.ERR_HANDLE)
+
+
+def build_prepare_request(values: Mapping[str, object]) -> prepare.PrepareRequest:
+    """Convert canonical prepare-tab values into a preparation request."""
+    def text(name: str) -> str:
+        value = values[name]
+        return value.strip() if isinstance(value, str) else str(value).strip()
+
+    mode = text("mode").lower()
+    if mode not in {"audio", "video"}:
+        raise ValueError("Mode must be audio or video")
+    return prepare.PrepareRequest(
+        mode=mode,
+        media_file=Path(text("media_file")),
+        image_type=text("image_type") or None,
+        artist=text("artist"),
+        title=text("title"),
+        language=text("language"),
+        output_directory=Path(text("output_directory")) if text("output_directory") else None,
+        upload=bool(values["upload"]),
+        subtitles=bool(values["subtitles"]),
+        overwrite_existing=bool(values["overwrite_existing"]),
+        clear_upload_cache=bool(values["clear_upload_cache"]),
+    )
+
+
+def run_prepare_process(request: prepare.PrepareRequest, output_queue) -> None:
+    """Run one preparation request while forwarding application output."""
+    prepare.OUT_HANDLE = QueueWriter(output_queue, "stdout")
+    prepare.ERR_HANDLE = QueueWriter(output_queue, "stderr")
+    try:
+        prepare.execute(request)
+    except BaseException:
+        traceback.print_exc(file=prepare.ERR_HANDLE)
 
 
 def recap_mode_from_label(label: str) -> str:

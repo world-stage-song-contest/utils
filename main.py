@@ -11,6 +11,7 @@ import cards
 import download
 import recap
 #import thumbnails
+import app_config
 import common
 
 def cleanup(tmp: Path) -> None:
@@ -128,37 +129,72 @@ STAGES = ["download", "cards", "recap", "thumbs", "show"]
 
 def setup_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Process recap videos.")
+    config = app_config.recap_settings()
 
     parser.add_argument("csv", type=Path, help="CSV or JSON file with recap metadata")
     parser.add_argument("--tmp", '-t', type=Path, default="temp", help="Temporary directory for clips and cards")
     parser.add_argument("--style", '-S', default="70s", help="Style to use for the cards")
-    parser.add_argument("--browser", '-b', default=None, help="Browser to use for downloads")
-    parser.add_argument("--po-token", '-p', default="", help="PO token for YouTube downloads")
+    parser.add_argument("--browser", '-b', default=config["browser"] or None, help="Browser to use for downloads")
+    parser.add_argument("--po-token", '-p', default=config["po_token"], help="PO token for YouTube downloads")
     parser.add_argument("--size", '-s', type=common.parse_size, help="Output size WxH (overrides automatic aspect ratio)")
     parser.add_argument("--auto-height", type=int, default=720, help="Output height when selecting an automatic aspect ratio")
     parser.add_argument("--fps", '-F', type=int, default=60, help="Output video FPS")
     parser.add_argument("--fade-duration", '-f', type=float, default=0.25, help="Fade duration in seconds")
-    parser.add_argument("--av1-preset", type=int, default=8, help="SVT-AV1 speed preset (higher is faster)")
-    parser.add_argument("--av1-crf", type=int, default=30, help="SVT-AV1 constant-quality value")
-    parser.add_argument("--av1-threads", type=int, default=0, help="SVT-AV1 threads per render (0 uses encoder default)")
-    parser.add_argument("--opus-bitrate", default="160k", help="Recap Opus audio bitrate")
-    parser.add_argument("--audio-normalization", choices=["none", "one-pass", "two-pass"], default="two-pass", help="Recap audio loudness mode")
-    parser.add_argument("--jobs", type=int, default=0, help="Concurrent recap renders (0 selects automatically)")
+    parser.add_argument("--av1-preset", type=int, default=config["av1_preset"], help="SVT-AV1 speed preset (higher is faster)")
+    parser.add_argument("--av1-crf", type=int, default=config["av1_crf"], help="SVT-AV1 constant-quality value")
+    parser.add_argument("--av1-threads", type=int, default=config["av1_threads"], help="SVT-AV1 threads per render (0 uses encoder default)")
+    parser.add_argument("--opus-bitrate", default=config["opus_bitrate"], help="Recap Opus audio bitrate")
+    parser.add_argument("--audio-normalization", choices=["none", "one-pass", "two-pass"], default=config["audio_normalization"], help="Recap audio loudness mode")
+    parser.add_argument("--jobs", type=int, default=config["jobs"], help="Concurrent recap renders (0 selects automatically)")
     parser.add_argument("--output", '-o', type=Path, default="output", help="Output video file name")
     parser.add_argument("--multiprocessing", '-m', action='store_true', help="Use multiprocessing")
     parser.add_argument("--cleanup", '-c', action='store_true', help="Cleanup temporary files after processing")
     parser.add_argument("--only-direct", '-d', default=False, action="store_true", dest="direct", help="Only create a straight recap")
     parser.add_argument("--only-reverse", '-r', default=False, action="store_true", dest="reverse", help="Only create a reverse recap")
-    parser.add_argument("--inkscape", default="inkscape", help="Path to the inkscape executable")
-    parser.add_argument("--card-renderer", choices=["inkscape", "resvg"], default="inkscape", help="SVG-to-PNG renderer")
-    parser.add_argument("--resvg", default="rsvg-convert", help="Path to the rsvg-convert executable")
-    parser.add_argument("--yt-dlp", default="yt-dlp", help="Path to the yt-dlp executable")
-    parser.add_argument("--ffmpeg", default="ffmpeg", help="Path to the ffmpeg executable")
-    parser.add_argument("--ffprobe", default="ffprobe", help="Path to the ffprobe executable")
+    parser.add_argument("--inkscape", default=config["inkscape"], help="Path to the inkscape executable")
+    parser.add_argument("--card-renderer", choices=["inkscape", "resvg"], default=config["card_renderer"], help="SVG-to-PNG renderer")
+    parser.add_argument("--resvg", default=config["resvg"], help="Path to the rsvg-convert executable")
+    parser.add_argument("--yt-dlp", default=config["yt_dlp"], help="Path to the yt-dlp executable")
+    parser.add_argument("--ffmpeg", default=config["ffmpeg"], help="Path to the ffmpeg executable")
+    parser.add_argument("--ffprobe", default=config["ffprobe"], help="Path to the ffprobe executable")
 
     return parser
 
+
+def setup_configure_args() -> argparse.ArgumentParser:
+    """Create the persistent recap-settings CLI without requiring a show file."""
+    parser = argparse.ArgumentParser(description="Read or update recap-maker defaults.")
+    parser.add_argument("--show", action="store_true", help="Print the current configuration and exit")
+    parser.add_argument("--browser", default=argparse.SUPPRESS)
+    parser.add_argument("--po-token", default=argparse.SUPPRESS)
+    parser.add_argument("--av1-preset", default=argparse.SUPPRESS)
+    parser.add_argument("--av1-crf", default=argparse.SUPPRESS)
+    parser.add_argument("--av1-threads", default=argparse.SUPPRESS)
+    parser.add_argument("--opus-bitrate", default=argparse.SUPPRESS)
+    parser.add_argument("--audio-normalization", choices=["none", "one-pass", "two-pass"], default=argparse.SUPPRESS)
+    parser.add_argument("--jobs", default=argparse.SUPPRESS)
+    parser.add_argument("--inkscape", default=argparse.SUPPRESS)
+    parser.add_argument("--card-renderer", choices=["inkscape", "resvg"], default=argparse.SUPPRESS)
+    parser.add_argument("--resvg", default=argparse.SUPPRESS)
+    parser.add_argument("--yt-dlp", default=argparse.SUPPRESS)
+    parser.add_argument("--ffmpeg", default=argparse.SUPPRESS)
+    parser.add_argument("--ffprobe", default=argparse.SUPPRESS)
+    return parser
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "configure":
+        args = setup_configure_args().parse_args(sys.argv[2:])
+        if args.show:
+            print(json.dumps(app_config.recap_settings(), indent=2))
+            return
+        values = {key: value for key, value in vars(args).items() if key != "show"}
+        if not values:
+            print("No settings supplied. Use --show to view current settings.", file=sys.stderr)
+            sys.exit(2)
+        path = app_config.update_recap_settings(values)
+        print(f"Saved recap configuration to {path}")
+        return
+
     if os.name == 'nt' and not common.is_admin():
         print("Please run this script as an administrator on Windows.", file=common.ERR_HANDLE)
         input("Press Enter to exit...")

@@ -9,13 +9,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Union
 
-from platformdirs import user_config_path
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 
 import app_cache
+import app_config
 
 base_url = 'https://media.world-stage.org'
-APP_NAME = "world-stage-recap-maker"
-S3_CONFIG_FILENAME = "prepare-s3.json"
+OUT_HANDLE = sys.stdout
+ERR_HANDLE = sys.stderr
 
 
 @dataclass(frozen=True)
@@ -25,46 +27,39 @@ class S3Config:
     profile: str
 
 
-def config_directory() -> Path:
-    return Path(user_config_path(APP_NAME, appauthor=False, ensure_exists=True))
+@dataclass(frozen=True)
+class PrepareRequest:
+    """The GUI- and CLI-independent description of one preparation job."""
 
-
-def s3_config_path() -> Path:
-    return config_directory() / S3_CONFIG_FILENAME
+    mode: str
+    media_file: Path
+    image_type: str | None
+    artist: str
+    title: str
+    language: str
+    output_directory: Path | None
+    upload: bool
+    subtitles: bool
+    overwrite_existing: bool
+    clear_upload_cache: bool = False
+    dry_run_mode: bool = False
+    quiet_mode: bool = False
 
 
 def save_s3_config(config: S3Config) -> Path:
-    path = s3_config_path()
-    path.write_text(
-        json.dumps({"endpoint_url": config.endpoint_url, "bucket": config.bucket, "profile": config.profile}, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    return path
+    return app_config.update_s3_settings(config.__dict__)
 
 
 def load_s3_config() -> S3Config:
-    path = s3_config_path()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
+    data = app_config.s3_settings()
+    if data is None:
         raise RuntimeError(
-            f"S3 configuration not found at {path}. Run 'prepare.py configure-s3 --endpoint-url URL' first."
-        ) from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid S3 configuration in {path}: {exc}") from exc
-
-    if not isinstance(data, dict):
-        raise RuntimeError(f"Invalid S3 configuration in {path}: expected a JSON object")
-    try:
-        config = S3Config(
-            endpoint_url=str(data["endpoint_url"]).strip(),
-            bucket=str(data["bucket"]).strip(),
-            profile=str(data["profile"]).strip(),
+            f"S3 configuration not found at {app_config.config_path()}. "
+            "Run 'prepare.py configure-s3 --endpoint-url URL' first."
         )
-    except KeyError as exc:
-        raise RuntimeError(f"Invalid S3 configuration in {path}: missing {exc.args[0]!r}") from exc
+    config = S3Config(data["endpoint_url"], data["bucket"], data["profile"])
     if not all((config.endpoint_url, config.bucket, config.profile)):
-        raise RuntimeError(f"Invalid S3 configuration in {path}: values must not be empty")
+        raise RuntimeError(f"Invalid S3 configuration in {app_config.config_path()}: values must not be empty")
     return config
 
 
@@ -323,8 +318,8 @@ class SongData:
     subtitles: bool
 
     def __post_init__(self):
-        if not re.fullmatch(r"[a-z]{2,3}(-[a-z0-9]{2,8})*", self.language):
-            raise ValueError(f"invalid language tag: {self.language!r}")
+        if not re.fullmatch(r"[a-z]{3}", self.language):
+            raise ValueError(f"invalid ISO 639-3 language code: {self.language!r}")
 
         if not self.audio_path.exists():
             raise FileNotFoundError(self.audio_path)
@@ -401,7 +396,7 @@ def cmd_str(cmd: list[str]) -> str:
 
 def qprint(*args: object) -> None:
     if not quiet.get():
-        print(*args, file=sys.stderr)
+        print(*args, file=ERR_HANDLE)
 
 Std = Union[int, None, IO[bytes]]
 
@@ -446,13 +441,13 @@ def setup_args() -> argparse.ArgumentParser:
     audio.add_argument("image_type", type=str, help="Image format (jpg, png, webp, etc.)")
     audio.add_argument("artist", type=str, help="The name of the song's artist")
     audio.add_argument("title", type=str, help="The title of the song")
-    audio.add_argument("language", type=str, help="The language code of the song")
+    audio.add_argument("language", type=str, help="ISO 639-3 language code of the song")
 
     video = subparsers.add_parser("video", help="Process a video file and only generate JSON")
     video.add_argument("media_file", type=Path, help="Video file in the format wsYEARcc.TYPE")
     video.add_argument("artist", type=str, help="The name of the song's artist")
     video.add_argument("title", type=str, help="The title of the song")
-    video.add_argument("language", type=str, help="The language code of the song")
+    video.add_argument("language", type=str, help="ISO 639-3 language code of the song")
 
     configure_s3 = subparsers.add_parser("configure-s3", help="Save S3 upload settings for future runs")
     configure_s3.add_argument("--endpoint-url", required=True, help="S3-compatible endpoint URL")
@@ -507,7 +502,7 @@ def convert_to_m4a(song: SongData) -> Path:
     
 def convert_to_mov(song: SongData) -> Path:
     video_path = song.audio_path
-    out_path = video_path.with_suffix(".mov")
+    out_path = song.output_path()
 
     year, cc = song.year_cc()
     country = cc_map.get(cc)
@@ -588,7 +583,7 @@ def make_json(song: SongData, duration: int, mode: str) -> Path:
     json_path = song.json_path()
 
     if not quiet.get():
-        print(f"Creating the json file at {json_path}")
+        print(f"Creating the json file at {json_path}", file=OUT_HANDLE)
 
     if dry_run.get():
         return json_path
@@ -633,7 +628,16 @@ def make_json(song: SongData, duration: int, mode: str) -> Path:
 
     return json_path
 
-def upload(path: Path | None, config: S3Config):
+def create_s3_client(config: S3Config):
+    """Create an S3-compatible client using the configured AWS profile."""
+    try:
+        session = boto3.Session(profile_name=config.profile)
+        return session.client("s3", endpoint_url=config.endpoint_url)
+    except BotoCoreError as exc:
+        raise RuntimeError(f"Could not initialize S3 profile {config.profile!r}: {exc}") from exc
+
+
+def upload(path: Path | None, config: S3Config, client) -> None:
     if path is None:
         return
 
@@ -641,93 +645,109 @@ def upload(path: Path | None, config: S3Config):
         qprint(f"Skipping unchanged upload: {path}")
         return
 
-    cmd = [
-        'aws', 's3', 'cp',
-        str(path),
-        f's3://{config.bucket}/{path.name}'
-    ]
-
     suffix = path.suffix.lower()
-
+    extra_args: dict[str, str] = {}
     if suffix == '.mov':
-        cmd += ['--content-type', 'video/mp4']
+        extra_args['ContentType'] = 'video/mp4'
     elif suffix == '.m4a':
-        cmd += ['--content-type', 'audio/mp4']
+        extra_args['ContentType'] = 'audio/mp4'
 
-    cmd += [
-        '--endpoint-url', config.endpoint_url,
-        '--profile', config.profile,
-    ]
+    qprint(f"Uploading {path} to s3://{config.bucket}/{path.name}")
+    if dry_run.get():
+        return
+    if client is None:
+        raise RuntimeError("S3 client was not initialized")
+    try:
+        if extra_args:
+            client.upload_file(str(path), config.bucket, path.name, ExtraArgs=extra_args)
+        else:
+            client.upload_file(str(path), config.bucket, path.name)
+    except (BotoCoreError, ClientError, OSError) as exc:
+        raise RuntimeError(f"Could not upload {path} to s3://{config.bucket}/{path.name}: {exc}") from exc
+    app_cache.store_upload(path, config.endpoint_url, config.bucket)
 
-    run(cmd)
-    if not dry_run.get():
-        app_cache.store_upload(path, config.endpoint_url, config.bucket)
+def execute(request: PrepareRequest) -> None:
+    """Prepare one audio or video item, optionally uploading its artifacts."""
+    if request.mode not in {"audio", "video"}:
+        raise ValueError(f"Unknown mode: {request.mode}")
+
+    quiet.set(request.quiet_mode)
+    dry_run.set(request.dry_run_mode)
+    overwrite.set(request.overwrite_existing)
+
+    if request.clear_upload_cache:
+        if request.dry_run_mode:
+            qprint(f"Would clear upload records in {app_cache.database_path()}")
+        else:
+            app_cache.initialize_database()
+            app_cache.clear_upload_cache()
+            print(f"Cleared upload cache records in {app_cache.database_path()}", file=ERR_HANDLE)
+
+    s3_config = None
+    s3_client = None
+    if request.upload:
+        s3_config = load_s3_config()
+        if not request.dry_run_mode:
+            app_cache.initialize_database()
+            s3_client = create_s3_client(s3_config)
+
+    img_type = f'.{request.image_type.lstrip(".")}' if request.mode == "audio" and request.image_type else None
+    if request.mode == "audio" and img_type is None:
+        raise ValueError("Audio preparation requires an image type, such as jpg or png")
+
+    song = SongData(audio_path=request.media_file,
+                    image_type=img_type,
+                    output_directory=request.output_directory,
+                    artist=request.artist,
+                    title=request.title,
+                    language=request.language.lower(),
+                    subtitles=request.subtitles)
+
+    song.output_path().parent.mkdir(parents=True, exist_ok=True)
+
+    if request.mode == 'audio':
+        media_path = convert_to_m4a(song)
+    else:
+        media_path = convert_to_mov(song)
+    duration = get_song_duration(media_path)
+    json_path = make_json(song, duration, request.mode)
+
+    if request.upload:
+        assert s3_config is not None
+        upload(media_path, s3_config, s3_client)
+        upload(json_path, s3_config, s3_client)
+        upload(song.image_path(), s3_config, s3_client)
+        upload(song.subtitles_path(), s3_config, s3_client)
+
 
 def main() -> None:
     args = setup_args().parse_args()
 
     if args.mode == "configure-s3":
         path = save_s3_config(S3Config(args.endpoint_url, args.bucket, args.profile))
-        print(f"Saved S3 configuration to {path}")
+        print(f"Saved S3 configuration to {path}", file=OUT_HANDLE)
         return
 
-    if args.clear_upload_cache:
-        if args.dry_run:
-            qprint(f"Would clear upload records in {app_cache.database_path()}")
-        else:
-            app_cache.initialize_database()
-            app_cache.clear_upload_cache()
-            print(f"Cleared upload cache records in {app_cache.database_path()}", file=sys.stderr)
-
-    s3_config = None
-    if args.upload:
-        try:
-            s3_config = load_s3_config()
-            if not args.dry_run:
-                app_cache.initialize_database()
-        except RuntimeError as exc:
-            print(exc, file=sys.stderr)
-            sys.exit(2)
-
-    mode = args.mode
-
-    if mode == 'audio':
-        img_type = f'.{args.image_type}'
-    elif mode == 'video':
-        img_type = None
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
-
-
-    song = SongData(audio_path=args.media_file,
-                    image_type=img_type,
-                    output_directory=args.output_directory,
-                    artist=args.artist,
-                    title=args.title,
-                    language=args.language.lower(),
-                    subtitles=args.subtitles)
-
-    song.output_path().parent.mkdir(parents=True, exist_ok=True)
-
-    quiet.set(args.quiet)
-    dry_run.set(args.dry_run)
-    overwrite.set(args.overwrite)
-
-    if mode == 'audio':
-        media_path = convert_to_m4a(song)
-    elif mode == 'video':
-        media_path = convert_to_mov(song)
-    else:
-        media_path = song.audio_path
-    duration = get_song_duration(media_path)
-    json_path = make_json(song, duration, args.mode)
-
-    if args.upload:
-        assert s3_config is not None
-        upload(media_path, s3_config)
-        upload(json_path, s3_config)
-        upload(song.image_path(), s3_config)
-        upload(song.subtitles_path(), s3_config)
+    request = PrepareRequest(
+        mode=args.mode,
+        media_file=args.media_file,
+        image_type=args.image_type if args.mode == "audio" else None,
+        artist=args.artist,
+        title=args.title,
+        language=args.language,
+        output_directory=args.output_directory,
+        upload=args.upload,
+        subtitles=args.subtitles,
+        overwrite_existing=args.overwrite,
+        clear_upload_cache=args.clear_upload_cache,
+        dry_run_mode=args.dry_run,
+        quiet_mode=args.quiet,
+    )
+    try:
+        execute(request)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(exc, file=ERR_HANDLE)
+        sys.exit(2)
 
 if __name__ == '__main__':
     main()

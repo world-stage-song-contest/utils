@@ -10,6 +10,7 @@ import traceback
 import common
 import main
 import prepare
+import app_config
 
 
 SHOW_FIELDS = (
@@ -63,6 +64,7 @@ def build_prepare_request(values: Mapping[str, object]) -> prepare.PrepareReques
     mode = text("mode").lower()
     if mode not in {"audio", "video"}:
         raise ValueError("Mode must be audio or video")
+    settings = app_config.recap_settings()
     return prepare.PrepareRequest(
         mode=mode,
         media_file=Path(text("media_file")),
@@ -75,6 +77,8 @@ def build_prepare_request(values: Mapping[str, object]) -> prepare.PrepareReques
         subtitles=bool(values["subtitles"]),
         overwrite_existing=bool(values["overwrite_existing"]),
         clear_upload_cache=bool(values["clear_upload_cache"]),
+        ffmpeg=str(settings["ffmpeg"]),
+        ffprobe=str(settings["ffprobe"]),
     )
 
 
@@ -129,6 +133,7 @@ def build_args(values: Mapping[str, object]) -> common.Args:
         ffmpeg=text("ffmpeg"),
         ffprobe=text("ffprobe"),
         yt_dlp=text("yt_dlp"),
+        gdown=text("gdown"),
         inkscape=text("inkscape"),
         card_renderer=text("card_renderer"),
         resvg=text("resvg"),

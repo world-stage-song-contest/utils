@@ -395,7 +395,6 @@ class PreparePanel(scrolled.ScrolledPanel):
         self.run_button = wx.Button(self, label="Prepare media")
         self.run_button.Bind(wx.EVT_BUTTON, self.run)
         root.Add(self.run_button, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 10)
-        root.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
         root.Add(wx.StaticText(self, label="Output"), 0, wx.LEFT | wx.RIGHT, 10)
         self.output_box = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
         self.output_box.SetMinSize(wx.Size(-1, 180))
@@ -547,6 +546,7 @@ class SettingsPanel(scrolled.ScrolledPanel):
         self.add_text(root, "FFmpeg", "ffmpeg", str(settings["ffmpeg"]))
         self.add_text(root, "FFprobe", "ffprobe", str(settings["ffprobe"]))
         self.add_text(root, "yt-dlp", "yt_dlp", str(settings["yt_dlp"]))
+        self.add_text(root, "gdown", "gdown", str(settings["gdown"]))
         self.add_text(root, "Browser", "browser", str(settings["browser"]))
         self.add_text(root, "PO token", "po_token", str(settings["po_token"]))
 

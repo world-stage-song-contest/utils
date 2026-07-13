@@ -98,6 +98,7 @@ class Args:
     ffmpeg: str
     ffprobe: str
     yt_dlp: str
+    gdown: str
     inkscape: str
     card_renderer: str
     resvg: str

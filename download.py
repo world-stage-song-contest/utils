@@ -200,7 +200,7 @@ def fetch(url: str, media_type: str, destination: Path, args: common.Args) -> No
             command.extend(["--ffmpeg-location", args.ffmpeg])
         common.run([*command, "-o", str(destination), url])
     elif match := _GDRIVE_RE.search(url):
-        common.run(["gdown", "--id", match.group(1), "-O", str(destination)])
+        common.run([args.gdown, "--id", match.group(1), "-O", str(destination)])
     else:
         download_direct(url, destination)
 

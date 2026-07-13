@@ -46,6 +46,8 @@ class PrepareRequest:
     upload: bool
     subtitles: bool
     overwrite_existing: bool
+    ffmpeg: str
+    ffprobe: str
     clear_upload_cache: bool = False
     dry_run_mode: bool = False
     quiet_mode: bool = False
@@ -471,7 +473,7 @@ def confirm_overwrite(path: Path) -> bool:
     inp = input(f"File {path} already exists. Overwrite? [y/N]") or 'n'
     return inp.lower().startswith('y')
 
-def convert_to_m4a(song: SongData) -> Path:
+def convert_to_m4a(song: SongData, ffmpeg: str) -> Path:
     image_path = song.image_path()
     audio_path = song.audio_path
     out_path = song.output_path()
@@ -483,7 +485,7 @@ def convert_to_m4a(song: SongData) -> Path:
     if not confirm_overwrite(out_path):
         return out_path
 
-    cmd = ['ffmpeg', '-y', '-hide_banner',
+    cmd = [ffmpeg, '-y', '-hide_banner',
         '-i', str(image_path),
         '-i', str(audio_path),
         '-map', '0:v:0', '-map', '1:a:0',
@@ -505,7 +507,7 @@ def convert_to_m4a(song: SongData) -> Path:
     run(cmd)
     return out_path
 
-def convert_to_mov(song: SongData) -> Path:
+def convert_to_mov(song: SongData, ffmpeg: str) -> Path:
     video_path = song.audio_path
     out_path = song.output_path()
 
@@ -519,7 +521,7 @@ def convert_to_mov(song: SongData) -> Path:
         return out_path
 
     cmd = [
-        'ffmpeg', '-y', '-hide_banner',
+        ffmpeg, '-y', '-hide_banner',
         '-i', str(video_path)
     ]
 
@@ -563,11 +565,11 @@ def convert_to_mov(song: SongData) -> Path:
 
     return out_path
 
-def get_song_duration(path: Path) -> int:
+def get_song_duration(path: Path, ffprobe: str) -> int:
     if dry_run.get():
         return 0
 
-    cmd = ['ffprobe', '-v', 'error',
+    cmd = [ffprobe, '-v', 'error',
            '-show_entries', 'format=duration',
            '-of', 'default=noprint_wrappers=1:nokey=1',
            str(path)]
@@ -712,10 +714,10 @@ def execute(request: PrepareRequest) -> None:
     song.output_path().parent.mkdir(parents=True, exist_ok=True)
 
     if request.mode == 'audio':
-        media_path = convert_to_m4a(song)
+        media_path = convert_to_m4a(song, request.ffmpeg)
     else:
-        media_path = convert_to_mov(song)
-    duration = get_song_duration(media_path)
+        media_path = convert_to_mov(song, request.ffmpeg)
+    duration = get_song_duration(media_path, request.ffprobe)
     json_path = make_json(song, duration, request.mode)
 
     if request.upload:
@@ -734,6 +736,7 @@ def main() -> None:
         print(f"Saved S3 configuration to {path}", file=OUT_HANDLE)
         return
 
+    settings = app_config.recap_settings()
     request = PrepareRequest(
         mode=args.mode,
         media_file=args.media_file,
@@ -745,6 +748,8 @@ def main() -> None:
         upload=args.upload,
         subtitles=args.subtitles,
         overwrite_existing=args.overwrite,
+        ffmpeg=str(settings["ffmpeg"]),
+        ffprobe=str(settings["ffprobe"]),
         clear_upload_cache=args.clear_upload_cache,
         dry_run_mode=args.dry_run,
         quiet_mode=args.quiet,

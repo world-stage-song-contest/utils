@@ -22,6 +22,7 @@ RECAP_DEFAULTS: dict[str, str | bool] = {
     "ffmpeg": "ffmpeg",
     "ffprobe": "ffprobe",
     "yt_dlp": "yt-dlp",
+    "gdown": "gdown",
     "browser": "",
     "po_token": "",
     "av1_preset": "8",

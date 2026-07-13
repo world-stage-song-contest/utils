@@ -9,6 +9,7 @@ import sqlite3
 import struct
 
 import common
+import country_schemes
 import svg
 
 @dataclass
@@ -47,7 +48,7 @@ def convert_svg_to_png(svg_path: Path, png_path: Path, renderer: str, inkscape: 
     common.run(cmd, capture=False)
 
 def make_70s_entry_svg(d: ET.Element, width: int, height: int, card_height: int,
-                       v: Data, scheme: common.CS) -> ET.Element:
+                       v: Data, scheme: country_schemes.CS) -> ET.Element:
     m = common.colours["70s"]
     y_off = height - card_height
     c1_diameter = card_height - 2 * MARGIN
@@ -172,7 +173,7 @@ def process_entry(
     d = svg.svg(img_width * 0.925, img_height * 0.925, width, height, origin="top-left")
 
     if v.country != 'XXX':
-        scheme = common.schemes[v.country]
+        scheme = country_schemes.schemes[v.country]
 
         make_entry_svg = entry_functions[style]
         make_entry_svg(d, width, height, height // 4, v, scheme)

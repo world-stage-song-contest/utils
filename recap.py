@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import app_cache
 import common
+import country_schemes
 import ffmpeg_tools
 
 RECAP_MEDIA_TYPES = {"v", "a"}
@@ -234,7 +235,7 @@ def make_chapter_data(rows: Iterable[Data], args: common.Args, out_path: Path, r
     for row in ordered_rows:
         start, end = clip_range(row, args.fade_duration)
         duration = end - start
-        country = common.schemes.get(row.country)
+        country = country_schemes.schemes.get(row.country)
         country_name = country.name if country else row.country
         chapters.append(
             "\n[CHAPTER]\n"

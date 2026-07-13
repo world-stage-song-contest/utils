@@ -8,11 +8,13 @@ import re
 import shutil
 import sqlite3
 import time
+from typing import Any, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from gdown.download import download as gdown_download
+from yt_dlp import YoutubeDL
 
 import common
 
@@ -39,6 +41,19 @@ class CacheRecord:
     etag: str | None
     object_path: Path
     display_aspect: float | None
+
+
+class YtDlpLogger:
+    """Forward embedded yt-dlp warnings and errors to the application log."""
+
+    def debug(self, message: str) -> None:
+        pass
+
+    def warning(self, message: str) -> None:
+        print(f"[yt-dlp] {message}", file=common.ERR_HANDLE)
+
+    def error(self, message: str) -> None:
+        print(f"[yt-dlp] {message}", file=common.ERR_HANDLE)
 
 
 def youtube_id(url: str) -> str:
@@ -190,17 +205,27 @@ def link_object(existing: Path, alias: Path) -> Path:
 def fetch(url: str, media_type: str, destination: Path, args: common.Args) -> None:
     if "youtu" in url:
         format_selector = "ba[ext=m4a]/ba" if media_type == "a" else "bv*+ba/b"
-        command = [
-            args.yt_dlp, "-f", format_selector,
-            "--extractor-args", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
-        ]
+        options: dict[str, object] = {
+            "format": format_selector,
+            "outtmpl": str(destination),
+            "extractor_args": {
+                "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]},
+            },
+            "logger": YtDlpLogger(),
+            "quiet": True,
+            "no_warnings": True,
+        }
         if media_type == "v":
-            command.extend(["--merge-output-format", "mp4"])
+            options["merge_output_format"] = "mp4"
         if args.browser:
-            command.extend(["--cookies-from-browser", args.browser])
+            options["cookiesfrombrowser"] = (args.browser,)
         if args.ffmpeg != "ffmpeg":
-            command.extend(["--ffmpeg-location", args.ffmpeg])
-        common.run([*command, "-o", str(destination), url])
+            options["ffmpeg_location"] = args.ffmpeg
+        try:
+            with YoutubeDL(cast(Any, options)) as downloader:
+                downloader.download([url])
+        except Exception as exc:
+            raise RuntimeError(f"Could not download YouTube media {url}: {exc}") from exc
     elif match := _GDRIVE_RE.search(url):
         try:
             output = gdown_download(id=match.group(1), output=str(destination), quiet=True)

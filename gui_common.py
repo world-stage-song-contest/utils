@@ -132,7 +132,6 @@ def build_args(values: Mapping[str, object]) -> common.Args:
         cleanup=bool(values["cleanup"]),
         ffmpeg=text("ffmpeg"),
         ffprobe=text("ffprobe"),
-        yt_dlp=text("yt_dlp"),
         inkscape=text("inkscape"),
         card_renderer=text("card_renderer"),
         resvg=text("resvg"),

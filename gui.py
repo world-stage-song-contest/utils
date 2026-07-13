@@ -549,7 +549,6 @@ class SettingsPanel(scrolled.ScrolledPanel):
         self.add_text(root, "Resvg", "resvg", str(settings["resvg"]))
         self.add_text(root, "FFmpeg", "ffmpeg", str(settings["ffmpeg"]))
         self.add_text(root, "FFprobe", "ffprobe", str(settings["ffprobe"]))
-        self.add_text(root, "yt-dlp", "yt_dlp", str(settings["yt_dlp"]))
         self.add_text(root, "Browser", "browser", str(settings["browser"]))
         self.add_text(root, "PO token", "po_token", str(settings["po_token"]))
 

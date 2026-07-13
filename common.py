@@ -97,7 +97,6 @@ class Args:
     cleanup: bool
     ffmpeg: str
     ffprobe: str
-    yt_dlp: str
     inkscape: str
     card_renderer: str
     resvg: str

@@ -91,10 +91,6 @@ def resolve_output_size(clips: common.Clips, args: common.Args) -> None:
         )
 
 def exec(args: common.Args) -> None:
-    if shutil.which(args.yt_dlp) is None:
-        print(f"Error: {args.yt_dlp} not found", file=common.ERR_HANDLE)
-        sys.exit(1)
-
     if shutil.which(args.ffmpeg) is None:
         print(f"Error: {args.ffmpeg} not found", file=common.ERR_HANDLE)
         sys.exit(1)
@@ -178,7 +174,6 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--inkscape", default=config["inkscape"], help="Path to the inkscape executable")
     parser.add_argument("--card-renderer", choices=["inkscape", "resvg"], default=config["card_renderer"], help="SVG-to-PNG renderer")
     parser.add_argument("--resvg", default=config["resvg"], help="Path to the rsvg-convert executable")
-    parser.add_argument("--yt-dlp", default=config["yt_dlp"], help="Path to the yt-dlp executable")
     parser.add_argument("--ffmpeg", default=config["ffmpeg"], help="Path to the ffmpeg executable")
     parser.add_argument("--ffprobe", default=config["ffprobe"], help="Path to the ffprobe executable")
 
@@ -200,7 +195,6 @@ def setup_configure_args() -> argparse.ArgumentParser:
     parser.add_argument("--inkscape", default=argparse.SUPPRESS)
     parser.add_argument("--card-renderer", choices=["inkscape", "resvg"], default=argparse.SUPPRESS)
     parser.add_argument("--resvg", default=argparse.SUPPRESS)
-    parser.add_argument("--yt-dlp", default=argparse.SUPPRESS)
     parser.add_argument("--ffmpeg", default=argparse.SUPPRESS)
     parser.add_argument("--ffprobe", default=argparse.SUPPRESS)
     return parser
@@ -257,7 +251,6 @@ def main() -> None:
         inkscape=args.inkscape,
         card_renderer=args.card_renderer,
         resvg=args.resvg,
-        yt_dlp=args.yt_dlp,
         only_straight=args.direct,
         only_reverse=args.reverse,
         upload_recaps=args.upload_recaps,

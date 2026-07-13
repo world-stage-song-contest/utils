@@ -21,7 +21,6 @@ RECAP_DEFAULTS: dict[str, str | bool] = {
     "resvg": "rsvg-convert",
     "ffmpeg": "ffmpeg",
     "ffprobe": "ffprobe",
-    "yt_dlp": "yt-dlp",
     "browser": "",
     "po_token": "",
     "av1_preset": "8",

@@ -6,12 +6,12 @@ from typing import Iterable
 import hashlib
 import json
 import multiprocessing as mp
-import re
 import time
 from urllib.parse import urlparse
 
 import app_cache
 import common
+import ffmpeg_tools
 
 RECAP_MEDIA_TYPES = {"v", "a"}
 
@@ -42,13 +42,6 @@ class Data:
             media_type=self.media_type,
             cover_path=self.cover_path,
         )
-
-
-@dataclass(frozen=True)
-class MediaProbe:
-    has_audio: bool
-    has_picture: bool
-    has_video: bool
 
 
 @dataclass(frozen=True)
@@ -94,12 +87,6 @@ def output_fingerprint(rows: list[Data], args: common.Args, reverse: bool) -> st
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
-def hms(seconds: float) -> str:
-    hours, rem = divmod(seconds, 3600)
-    minutes, secs = divmod(rem, 60)
-    return f"{int(hours):02d}:{int(minutes):02d}:{secs:06.3f}"
-
-
 def parse_seconds(value: str | None) -> float | None:
     """Parse a string in the form SS, M:SS, or H:MM:SS."""
     if not value or not value.strip():
@@ -132,31 +119,7 @@ def clip_range(row: Data, fade_duration: float) -> tuple[float, float]:
     return start, end
 
 
-def probe_media(path: Path, args: common.Args) -> MediaProbe:
-    proc = common.run([
-        args.ffprobe, "-v", "error", "-show_entries",
-        "stream=codec_type:stream_disposition=attached_pic", "-of", "json", str(path),
-    ])
-    try:
-        streams = json.loads(proc.stdout).get("streams", [])
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Cannot read stream data from {path}") from exc
-
-    has_audio = any(stream.get("codec_type") == "audio" for stream in streams)
-    has_picture = any(
-        stream.get("codec_type") == "video"
-        and stream.get("disposition", {}).get("attached_pic", 0)
-        for stream in streams
-    )
-    has_video = any(
-        stream.get("codec_type") == "video"
-        and not stream.get("disposition", {}).get("attached_pic", 0)
-        for stream in streams
-    )
-    return MediaProbe(has_audio=has_audio, has_picture=has_picture, has_video=has_video)
-
-
-def validate_media(row: Data, probe: MediaProbe) -> None:
+def validate_media(row: Data, probe: ffmpeg_tools.MediaProbe) -> None:
     if not probe.has_audio:
         raise RuntimeError(f"Source has no audio stream: {row.path}")
     if row.media_type == "v" and not probe.has_video:
@@ -176,33 +139,9 @@ def video_normalizer(width: int, height: int) -> str:
     )
 
 
-def loudnorm_filter(row: Data, start: float, duration: float, args: common.Args) -> str:
-    if args.audio_normalization == "none":
-        return ""
-    base = "loudnorm=I=-14:TP=-1.5:LRA=11"
-    if args.audio_normalization == "one-pass":
-        return f",{base}"
-
-    probe = common.run([
-        args.ffmpeg, "-hide_banner", "-loglevel", "info", "-ss", hms(start), "-t", hms(duration),
-        "-i", str(row.path), "-map", "0:a:0", "-af", f"{base}:print_format=json", "-f", "null", "-",
-    ])
-    match = re.findall(r"\{\s*\"input_i\".*?\}", probe.stderr, flags=re.DOTALL)
-    if not match:
-        raise RuntimeError(f"Could not measure loudness for {row.path}")
-    measured = json.loads(match[-1])
-    values = ":".join(
-        f"{target}={measured[source]}"
-        for target, source in [
-            ("measured_I", "input_i"), ("measured_TP", "input_tp"),
-            ("measured_LRA", "input_lra"), ("measured_thresh", "input_thresh"),
-            ("offset", "target_offset"),
-        ]
-    )
-    return f",{base}:{values}:linear=true:print_format=summary"
-
-
-def build_graph(rows: list[Data], args: common.Args) -> tuple[list[str], str, int]:
+def build_graph(
+    rows: list[Data], args: common.Args, media: ffmpeg_tools.FFmpeg,
+) -> tuple[list[str], str, int]:
     """Create all FFmpeg inputs and a graph that emits one recap A/V pair."""
     if not rows:
         raise ValueError("Cannot render an empty recap")
@@ -213,7 +152,7 @@ def build_graph(rows: list[Data], args: common.Args) -> tuple[list[str], str, in
     input_args: list[str] = []
     filters: list[str] = []
     concat_inputs: list[str] = []
-    probes: dict[Path, MediaProbe] = {}
+    probes: dict[Path, ffmpeg_tools.MediaProbe] = {}
     input_count = 0
 
     for entry_number, row in enumerate(rows):
@@ -225,7 +164,7 @@ def build_graph(rows: list[Data], args: common.Args) -> tuple[list[str], str, in
 
         probe = probes.get(row.path)
         if probe is None:
-            probe = probe_media(row.path, args)
+            probe = media.probe_media(row.path)
             probes[row.path] = probe
         validate_media(row, probe)
         start, end = clip_range(row, args.fade_duration)
@@ -238,14 +177,14 @@ def build_graph(rows: list[Data], args: common.Args) -> tuple[list[str], str, in
         # Seek each occurrence independently.  That preserves fast seeking for
         # short snippets, even when the same source appears more than once.
         input_args.extend([
-            "-ss", hms(start), "-t", hms(duration), "-i", str(row.path),
+            "-ss", ffmpeg_tools.timestamp(start), "-t", ffmpeg_tools.timestamp(duration), "-i", str(row.path),
         ])
 
         if row.media_type == "a" and row.cover_path is not None and row.cover_path.exists():
             visual_input_index = input_count
             input_count += 1
             input_args.extend([
-                "-loop", "1", "-framerate", str(args.fps), "-t", hms(duration), "-i", str(row.cover_path),
+                "-loop", "1", "-framerate", str(args.fps), "-t", ffmpeg_tools.timestamp(duration), "-i", str(row.cover_path),
             ])
             visual_input = f"[{visual_input_index}:v:0]trim=duration={duration_text},setpts=PTS-STARTPTS"
         elif row.media_type == "a":
@@ -264,7 +203,7 @@ def build_graph(rows: list[Data], args: common.Args) -> tuple[list[str], str, in
         card_input = input_count
         input_count += 1
         input_args.extend([
-            "-loop", "1", "-framerate", str(args.fps), "-t", hms(duration), "-i", str(card),
+            "-loop", "1", "-framerate", str(args.fps), "-t", ffmpeg_tools.timestamp(duration), "-i", str(card),
         ])
 
         filters.extend([
@@ -276,7 +215,7 @@ def build_graph(rows: list[Data], args: common.Args) -> tuple[list[str], str, in
             f"fade=t=out:st={fade_start}:d={args.fade_duration:.6f},"
             f"fps=fps={args.fps},format=yuv420p[v{entry_number}]",
             f"[{media_input}:a:0]atrim=duration={duration_text},asetpts=PTS-STARTPTS"
-            f"{loudnorm_filter(row, start, duration, args)},"
+            f"{media.loudnorm_filter(row.path, start, duration, args.audio_normalization)},"
             f"afade=t=in:st=0:d={args.fade_duration:.6f},"
             f"afade=t=out:st={fade_start}:d={args.fade_duration:.6f}[a{entry_number}]",
         ])
@@ -310,26 +249,25 @@ def make_chapter_data(rows: Iterable[Data], args: common.Args, out_path: Path, r
 
 def render(job: RenderJob, args: common.Args) -> tuple[str, Path]:
     rows = list(reversed(job.rows)) if job.reverse else job.rows
-    input_args, graph, input_count = build_graph(rows, args)
+    media = ffmpeg_tools.FFmpeg(args.ffmpeg, args.ffprobe, common.run)
+    input_args, graph, input_count = build_graph(rows, args, media)
     job.graph.write_text(graph, encoding="utf-8")
-    temp_out = job.output.with_suffix(".temp.mp4")
     metadata_input = input_count
     year, show_code = split_key(job.key)
     show_name = common.show_name_map.get(show_code, "NF")
     direction = "Reverse" if job.reverse else "Direct"
 
-    av1_thread_args = ["-svtav1-params", f"lp={args.av1_threads}"] if args.av1_threads > 0 else []
-    common.run([
-        args.ffmpeg, "-hide_banner", "-y", "-loglevel", "error",
-        *input_args, "-f", "ffmetadata", "-i", str(job.metadata),
-        "-filter_complex_script", str(job.graph),
-        "-map", "[vout]", "-map", "[aout]", "-map_metadata", str(metadata_input),
-        "-metadata", f"title={year} {show_name} {direction} Recap",
-        "-c:v", "libsvtav1", "-preset", str(args.av1_preset), "-crf", str(args.av1_crf), *av1_thread_args,
-        "-pix_fmt", "yuv420p", "-c:a", "libopus", "-b:a", args.opus_bitrate,
-        "-movflags", "+faststart", "-f", "mp4", str(temp_out),
-    ])
-    temp_out.rename(job.output)
+    media.render_recap(
+        inputs=input_args,
+        metadata=job.metadata,
+        graph=job.graph,
+        output=job.output,
+        title=f"{year} {show_name} {direction} Recap",
+        metadata_input=metadata_input,
+        encoding=ffmpeg_tools.RecapEncoding(
+            args.av1_preset, args.av1_crf, args.av1_threads, args.opus_bitrate,
+        ),
+    )
     app_cache.store_recap_fingerprint(job.output, job.fingerprint)
     return job.key, job.output
 

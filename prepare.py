@@ -4,7 +4,6 @@
 import shlex
 import argparse
 import json
-import math
 import os
 import re
 import sys
@@ -19,6 +18,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 import app_cache
 import app_config
+import ffmpeg_tools
 
 base_url = 'https://media.world-stage.org'
 OUT_HANDLE = sys.stdout
@@ -394,6 +394,21 @@ class SongData:
         else:
             return ", ".join(parts[:-1]) + " & " + parts[-1]
 
+    def media_tags(self) -> ffmpeg_tools.MediaTags:
+        year, cc = self.year_cc()
+        country = cc_map.get(cc)
+        if not country:
+            raise ValueError(f"unknown country code '{cc}' for file {self.audio_path}")
+        return ffmpeg_tools.MediaTags(
+            title=self.title,
+            artist=self.artist,
+            album=f"{country} {year}",
+            keywords=f"{country};{year}",
+            date=year,
+            location=country,
+            language=self.language,
+        )
+
 quiet = ContextVar("quiet", default=False)
 dry_run = ContextVar("dry_run", default=False)
 overwrite = ContextVar("overwrite", default=False)
@@ -472,119 +487,6 @@ def confirm_overwrite(path: Path) -> bool:
         return True
     inp = input(f"File {path} already exists. Overwrite? [y/N]") or 'n'
     return inp.lower().startswith('y')
-
-def convert_to_m4a(song: SongData, ffmpeg: str) -> Path:
-    image_path = song.image_path()
-    audio_path = song.audio_path
-    out_path = song.output_path()
-    year, cc = song.year_cc()
-    country = cc_map.get(cc)
-    if not country:
-        raise ValueError(f"unknown country code '{cc}' for file {audio_path}")
-
-    if not confirm_overwrite(out_path):
-        return out_path
-
-    cmd = [ffmpeg, '-y', '-hide_banner',
-        '-i', str(image_path),
-        '-i', str(audio_path),
-        '-map', '0:v:0', '-map', '1:a:0',
-        '-c:v', 'mjpeg', '-c:a', 'copy',
-        '-disposition:v:0', 'attached_pic',
-        '-metadata:s:v:0', 'title=Album cover',
-        '-metadata:s:v:0', 'comment=Cover (front)',
-        '-metadata', f'title={song.title}',
-        '-metadata', f'artist={song.artist}',
-        '-metadata', f'album={country} {year}',
-        '-metadata', f'keywords={country};{year}',
-        '-metadata', f'date={year}',
-        '-metadata', f'location={country}',
-        '-metadata:s:a:0', f'language={song.language}',
-        '-metadata', 'album_artist=World Stage',
-        '-movflags', '+faststart', '-f', 'mp4',
-        str(out_path)]
-
-    run(cmd)
-    return out_path
-
-def convert_to_mov(song: SongData, ffmpeg: str) -> Path:
-    video_path = song.audio_path
-    out_path = song.output_path()
-
-    year, cc = song.year_cc()
-    country = cc_map.get(cc)
-
-    if not country:
-        raise ValueError(f"unknown country code '{cc}' for file {video_path}")
-
-    if not confirm_overwrite(out_path):
-        return out_path
-
-    cmd = [
-        ffmpeg, '-y', '-hide_banner',
-        '-i', str(video_path)
-    ]
-
-    subtitle_path = song.subtitles_path()
-
-    if subtitle_path:
-        cmd += [
-            '-i', str(subtitle_path),
-            '-map', '0:v',
-            '-map', '0:a',
-            '-map', '1',
-            '-c:v', 'copy',
-            '-c:a', 'copy',
-            '-c:s', 'mov_text',
-            '-metadata:s:s:0', 'language=eng'
-        ]
-    else:
-        cmd += [
-            '-c:v', 'copy',
-            '-c:a', 'copy'
-        ]
-
-    cmd += [
-        '-map_metadata', '-1',
-
-        '-metadata', f'title={song.title}',
-        '-metadata', f'artist={song.artist}',
-        '-metadata', f'album={country} {year}',
-        '-metadata', f'keywords={country};{year}',
-        '-metadata', f'date={year}',
-        '-metadata', f'location={country}',
-        '-metadata:s:a:0', f'language={song.language}',
-        '-metadata', 'album_artist=World Stage',
-
-        '-movflags', '+faststart',
-        '-f', 'mp4',
-        str(out_path)
-    ]
-
-    run(cmd)
-
-    return out_path
-
-def get_song_duration(path: Path, ffprobe: str) -> int:
-    if dry_run.get():
-        return 0
-
-    cmd = [ffprobe, '-v', 'error',
-           '-show_entries', 'format=duration',
-           '-of', 'default=noprint_wrappers=1:nokey=1',
-           str(path)]
-
-    proc = run(cmd, capture=True)
-
-    if proc is None:
-        raise RuntimeError("This should never happen, but I need to check for it anyway (duration).")
-
-    s = proc.stdout.decode("utf-8", "replace").strip()
-    try:
-        runtime = float(s)
-        return math.ceil(runtime)
-    except ValueError as e:
-        raise RuntimeError(f"ffprobe returned non-float duration: {s!r}") from e
 
 def make_json(song: SongData, duration: int, mode: str) -> Path:
     json_path = song.json_path()
@@ -713,11 +615,16 @@ def execute(request: PrepareRequest) -> None:
 
     song.output_path().parent.mkdir(parents=True, exist_ok=True)
 
-    if request.mode == 'audio':
-        media_path = convert_to_m4a(song, request.ffmpeg)
-    else:
-        media_path = convert_to_mov(song, request.ffmpeg)
-    duration = get_song_duration(media_path, request.ffprobe)
+    media = ffmpeg_tools.FFmpeg(request.ffmpeg, request.ffprobe, run)
+    media_path = song.output_path()
+    if confirm_overwrite(media_path):
+        if request.mode == "audio":
+            cover = song.image_path()
+            assert cover is not None
+            media.make_audio(cover, song.audio_path, media_path, song.media_tags())
+        else:
+            media.make_video(song.audio_path, song.subtitles_path(), media_path, song.media_tags())
+    duration = 0 if dry_run.get() else media.duration(media_path)
     json_path = make_json(song, duration, request.mode)
 
     if request.upload:

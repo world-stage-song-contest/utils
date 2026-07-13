@@ -9,6 +9,7 @@ import json
 
 import cards
 import download
+import ffmpeg_tools
 import recap
 #import thumbnails
 import app_config
@@ -32,23 +33,8 @@ def video_display_aspect(path: Path, args: common.Args) -> float:
     cached = download.cached_display_aspect(args.vidsdir, path)
     if cached is not None:
         return cached
-    proc = common.run([
-        args.ffprobe, "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,sample_aspect_ratio", "-of", "json", str(path),
-    ])
-    streams = json.loads(proc.stdout).get("streams", [])
-    if not streams:
-        raise RuntimeError(f"No video stream found while detecting aspect ratio: {path}")
-    stream = streams[0]
-    width = int(stream["width"])
-    height = int(stream["height"])
-    try:
-        sar_width, sar_height = map(int, stream.get("sample_aspect_ratio", "1:1").split(":"))
-        if sar_width <= 0 or sar_height <= 0:
-            raise ValueError
-    except ValueError:
-        sar_width, sar_height = (1, 1)
-    aspect = (width * sar_width) / (height * sar_height)
+    media = ffmpeg_tools.FFmpeg(args.ffmpeg, args.ffprobe, common.run)
+    aspect = media.display_aspect(path)
     download.store_display_aspect(args.vidsdir, path, aspect)
     return aspect
 

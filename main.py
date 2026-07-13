@@ -12,7 +12,9 @@ import download
 import recap
 #import thumbnails
 import app_config
+import app_cache
 import common
+import prepare
 
 def cleanup(tmp: Path) -> None:
     for root, dirs, files in tmp.walk(top_down=False):
@@ -102,6 +104,17 @@ def exec(args: common.Args) -> None:
         print(f"Error: {renderer_path} not found", file=common.ERR_HANDLE)
         sys.exit(1)
 
+    s3_config = None
+    s3_client = None
+    if args.upload_recaps:
+        try:
+            s3_config = prepare.load_s3_config()
+            app_cache.initialize_database()
+            s3_client = prepare.create_s3_client(s3_config)
+        except RuntimeError as exc:
+            print(f"Error: recap upload is enabled but S3 is unavailable: {exc}", file=common.ERR_HANDLE)
+            sys.exit(1)
+
     start = time.time()
     # Download videos
     clips = download.main(args)
@@ -116,7 +129,17 @@ def exec(args: common.Args) -> None:
     #thumbnails.main(args)
 
     # Create recap video
-    recap.main(clips, args)
+    recap_outputs = recap.main(clips, args)
+
+    if s3_config is not None:
+        # The preparation uploader already supplies content types and cache
+        # checks.  Point its status handles at the recap process so GUI users
+        # receive the same live upload messages as command-line users.
+        prepare.OUT_HANDLE = common.OUT_HANDLE
+        prepare.ERR_HANDLE = common.ERR_HANDLE
+        for outputs in recap_outputs.values():
+            for output in outputs:
+                prepare.upload(output, s3_config, s3_client, f"recaps/{output.name}")
 
     # Cleanup temporary files
     if args.cleanup:
@@ -151,6 +174,7 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--cleanup", '-c', action='store_true', help="Cleanup temporary files after processing")
     parser.add_argument("--only-direct", '-d', default=False, action="store_true", dest="direct", help="Only create a straight recap")
     parser.add_argument("--only-reverse", '-r', default=False, action="store_true", dest="reverse", help="Only create a reverse recap")
+    parser.add_argument("--upload-recaps", action=argparse.BooleanOptionalAction, default=True, help="Upload recaps to the configured S3 bucket")
     parser.add_argument("--inkscape", default=config["inkscape"], help="Path to the inkscape executable")
     parser.add_argument("--card-renderer", choices=["inkscape", "resvg"], default=config["card_renderer"], help="SVG-to-PNG renderer")
     parser.add_argument("--resvg", default=config["resvg"], help="Path to the rsvg-convert executable")
@@ -236,6 +260,7 @@ def main() -> None:
         yt_dlp=args.yt_dlp,
         only_straight=args.direct,
         only_reverse=args.reverse,
+        upload_recaps=args.upload_recaps,
     ))
 
 if __name__ == "__main__":

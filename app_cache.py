@@ -73,21 +73,23 @@ def store_recap_fingerprint(output: Path, fingerprint: str) -> None:
         )
 
 
-def is_cached_upload(path: Path, endpoint_url: str, bucket: str) -> bool:
+def is_cached_upload(path: Path, endpoint_url: str, bucket: str, object_name: str | None = None) -> bool:
     stat = path.stat()
+    object_name = object_name or path.name
     with _connect() as conn:
         row = conn.execute(
             """
             SELECT source_path, size, mtime_ns FROM upload_cache
             WHERE endpoint_url = ? AND bucket = ? AND object_name = ?
             """,
-            (endpoint_url, bucket, path.name),
+            (endpoint_url, bucket, object_name),
         ).fetchone()
     return row == (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
 
 
-def store_upload(path: Path, endpoint_url: str, bucket: str) -> None:
+def store_upload(path: Path, endpoint_url: str, bucket: str, object_name: str | None = None) -> None:
     stat = path.stat()
+    object_name = object_name or path.name
     with _connect() as conn:
         conn.execute(
             """
@@ -99,7 +101,7 @@ def store_upload(path: Path, endpoint_url: str, bucket: str) -> None:
                 mtime_ns = excluded.mtime_ns,
                 uploaded_at = CURRENT_TIMESTAMP
             """,
-            (endpoint_url, bucket, path.name, str(path.resolve()), stat.st_size, stat.st_mtime_ns),
+            (endpoint_url, bucket, object_name, str(path.resolve()), stat.st_size, stat.st_mtime_ns),
         )
 
 

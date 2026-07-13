@@ -137,6 +137,7 @@ def build_args(values: Mapping[str, object]) -> common.Args:
         vidsdir=tmpdir / "sources",
         cardsdir=tmpdir / "cards",
         clipsdir=tmpdir / "clips",
+        upload_recaps=bool(values.get("upload_recaps", True)),
     )
 
 

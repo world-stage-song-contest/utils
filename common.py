@@ -1,4 +1,3 @@
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 import shlex
@@ -7,7 +6,7 @@ import sys
 import ctypes
 import csv
 import json
-from typing import Any, cast
+from typing import cast
 
 OUT_HANDLE = sys.stdout
 ERR_HANDLE = sys.stderr
@@ -40,14 +39,12 @@ def load_rows(path: Path) -> list[dict[str, str]]:
             source_rows: list[dict[str, object]] = [
                 cast(dict[str, object], dict(row)) for row in csv.DictReader(f)
             ]
-        is_json = False
     elif path.suffix.lower() == ".json":
         with path.open(encoding="utf-8") as f:
             value = json.load(f)
         if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
             raise ValueError(f"JSON input must be a list of metadata objects: {path}")
         source_rows = [cast(dict[str, object], row) for row in value]
-        is_json = True
     else:
         raise ValueError(f"Unsupported input format for {path}; expected .csv or .json")
 
@@ -109,6 +106,7 @@ class Args:
     vidsdir: Path
     cardsdir: Path
     clipsdir: Path
+    upload_recaps: bool = True
 
 @dataclass
 class CS:

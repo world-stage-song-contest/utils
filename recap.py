@@ -401,6 +401,7 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
     scratch.mkdir(parents=True, exist_ok=True)
     app_cache.initialize_database()
     jobs: list[RenderJob] = []
+    available: list[tuple[str, Path]] = []
 
     def add_jobs(data: dict[str, list[Data]], is_reverse: bool) -> None:
         suffix = "" if is_reverse else "s"
@@ -409,6 +410,7 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
             fingerprint = output_fingerprint(rows, args, is_reverse)
             if output.exists() and app_cache.cached_recap_fingerprint(output) == fingerprint:
                 print(f"[recap] {output} exists, skipping", file=common.OUT_HANDLE)
+                available.append((key, output))
                 continue
             metadata = scratch / f"{output.stem}.meta.txt"
             graph = scratch / f"{output.stem}.ffscript"
@@ -433,7 +435,7 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
         rendered = []
 
     result: dict[str, list[Path]] = defaultdict(list)
-    for key, output in rendered:
+    for key, output in [*available, *rendered]:
         result[key].append(output)
     print(f"[recap] Rendered {len(rendered)} recaps in {time.time() - start:.2f} seconds", file=common.OUT_HANDLE)
     return result

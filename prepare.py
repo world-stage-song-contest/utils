@@ -2,7 +2,12 @@
 # pyright: reportMissingImports=false
 
 import shlex
-import argparse, json, math, os, re, sys
+import argparse
+import json
+import math
+import os
+import re
+import sys
 import subprocess as sp
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -337,7 +342,7 @@ class SongData:
 
     def output_path(self) -> Path:
         ext = '.mov' if self.image_type is None else '.m4a'
-        
+
         if self.output_directory is not None:
             return self.output_directory / f"{self.audio_path.stem}{ext}"
         else:
@@ -499,7 +504,7 @@ def convert_to_m4a(song: SongData) -> Path:
 
     run(cmd)
     return out_path
-    
+
 def convert_to_mov(song: SongData) -> Path:
     video_path = song.audio_path
     out_path = song.output_path()
@@ -637,11 +642,12 @@ def create_s3_client(config: S3Config):
         raise RuntimeError(f"Could not initialize S3 profile {config.profile!r}: {exc}") from exc
 
 
-def upload(path: Path | None, config: S3Config, client) -> None:
+def upload(path: Path | None, config: S3Config, client, object_name: str | None = None) -> None:
     if path is None:
         return
+    object_name = object_name or path.name
 
-    if not dry_run.get() and app_cache.is_cached_upload(path, config.endpoint_url, config.bucket):
+    if not dry_run.get() and app_cache.is_cached_upload(path, config.endpoint_url, config.bucket, object_name):
         qprint(f"Skipping unchanged upload: {path}")
         return
 
@@ -652,19 +658,19 @@ def upload(path: Path | None, config: S3Config, client) -> None:
     elif suffix == '.m4a':
         extra_args['ContentType'] = 'audio/mp4'
 
-    qprint(f"Uploading {path} to s3://{config.bucket}/{path.name}")
+    qprint(f"Uploading {path} to s3://{config.bucket}/{object_name}")
     if dry_run.get():
         return
     if client is None:
         raise RuntimeError("S3 client was not initialized")
     try:
         if extra_args:
-            client.upload_file(str(path), config.bucket, path.name, ExtraArgs=extra_args)
+            client.upload_file(str(path), config.bucket, object_name, ExtraArgs=extra_args)
         else:
-            client.upload_file(str(path), config.bucket, path.name)
+            client.upload_file(str(path), config.bucket, object_name)
     except (BotoCoreError, ClientError, OSError) as exc:
-        raise RuntimeError(f"Could not upload {path} to s3://{config.bucket}/{path.name}: {exc}") from exc
-    app_cache.store_upload(path, config.endpoint_url, config.bucket)
+        raise RuntimeError(f"Could not upload {path} to s3://{config.bucket}/{object_name}: {exc}") from exc
+    app_cache.store_upload(path, config.endpoint_url, config.bucket, object_name)
 
 def execute(request: PrepareRequest) -> None:
     """Prepare one audio or video item, optionally uploading its artifacts."""

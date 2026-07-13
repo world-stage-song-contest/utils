@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 """wxPython GUI for the World Stage recap maker."""
 
-# pyright: reportMissingImports=false
-
 from __future__ import annotations
 
 from pathlib import Path
 import multiprocessing as mp
 from queue import Empty
+from typing import Callable, cast
 
-try:
-    import wx
-    import wx.lib.scrolledpanel as scrolled
-except ImportError as exc:  # pragma: no cover - depends on optional GUI package
-    raise SystemExit("wxPython is required for gui_wx.py. Install it with: pip install wxPython") from exc
+import wx
+import wx.lib.scrolledpanel as scrolled
 
 import common
 import gui_common
@@ -21,12 +17,18 @@ import prepare
 import app_config
 
 
+RecapControl = wx.TextCtrl | wx.Choice | wx.CheckBox | wx.RadioBox
+EntryControl = wx.TextCtrl | wx.Choice
+PrepareControl = wx.TextCtrl | wx.Choice | wx.CheckBox
+SettingsControl = wx.TextCtrl | wx.Choice | wx.CheckBox
+
+
 class ConfigPanel(scrolled.ScrolledPanel):
     """Scrollable run configuration with native wheel/trackpad support."""
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.values: dict[str, wx.Window] = {}
+        self.values: dict[str, RecapControl] = {}
         self.output_queue = mp.Queue()
         self.process: mp.Process | None = None
         self.output_timer = wx.Timer(self)
@@ -46,6 +48,7 @@ class ConfigPanel(scrolled.ScrolledPanel):
         self.add_text_row(root, "Fade (seconds)", "fade", "0.25")
         self.add_text_row(root, "FPS", "fps", "60")
         self.add_radio(root, "Recaps", "recap_mode", [label for _value, label in gui_common.RECAP_MODES])
+        self.add_checkbox(root, "Upload recaps to configured S3", "upload_recaps", True)
 
         self.run_button = wx.Button(self, label="Run recap maker")
         self.run_button.Bind(wx.EVT_BUTTON, self.run)
@@ -54,7 +57,7 @@ class ConfigPanel(scrolled.ScrolledPanel):
         root.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
         root.Add(wx.StaticText(self, label="Output"), 0, wx.LEFT | wx.RIGHT, 10)
         self.output_box = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
-        self.output_box.SetMinSize((-1, 180))
+        self.output_box.SetMinSize(wx.Size(-1, 180))
         root.Add(self.output_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
 
         self.SetSizer(root)
@@ -65,13 +68,19 @@ class ConfigPanel(scrolled.ScrolledPanel):
         title.SetFont(title.GetFont().Bold().Scale(1.2))
         sizer.Add(title, 0, wx.TOP | wx.LEFT | wx.RIGHT, 12)
 
-    def add_row(self, root, label, control, browse=None) -> None:
+    def add_row(
+        self,
+        root: wx.Sizer,
+        label: wx.StaticText,
+        control: wx.Window,
+        browse: Callable[[], None] | None = None,
+    ) -> None:
         row = wx.BoxSizer(wx.HORIZONTAL)
-        label.SetMinSize((175, -1))
+        label.SetMinSize(wx.Size(175, -1))
         row.Add(label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
         row.Add(control, 1, wx.EXPAND | wx.RIGHT, 6)
         if browse:
-            button = wx.Button(self, label="…", size=(36, -1))
+            button = wx.Button(self, label="…", size=wx.Size(36, -1))
             button.Bind(wx.EVT_BUTTON, lambda _event: browse())
             row.Add(button, 0)
         root.Add(row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 6)
@@ -111,27 +120,27 @@ class ConfigPanel(scrolled.ScrolledPanel):
             control.Bind(wx.EVT_CHOICE, handler)
         self.add_row(root, wx.StaticText(self, label=label), control)
 
-    def pick_file(self, control) -> None:
+    def pick_file(self, control: wx.TextCtrl) -> None:
         with wx.FileDialog(self, "Choose file", style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dialog:
             if dialog.ShowModal() == wx.ID_OK:
                 control.SetValue(dialog.GetPath())
 
-    def pick_directory(self, control) -> None:
+    def pick_directory(self, control: wx.TextCtrl) -> None:
         with wx.DirDialog(self, "Choose directory") as dialog:
             if dialog.ShowModal() == wx.ID_OK:
                 control.SetValue(dialog.GetPath())
 
     def text(self, name: str) -> str:
-        return self.values[name].GetValue().strip()
+        return cast(wx.TextCtrl, self.values[name]).GetValue().strip()
 
     def choice(self, name: str) -> str:
-        return self.values[name].GetStringSelection()
+        return cast(wx.Choice | wx.RadioBox, self.values[name]).GetStringSelection()
 
     def checked(self, name: str) -> bool:
-        return self.values[name].GetValue()
+        return cast(wx.CheckBox, self.values[name]).GetValue()
 
     def set_input_path(self, path: Path) -> None:
-        self.values["input_file"].SetValue(str(path))
+        cast(wx.TextCtrl, self.values["input_file"]).SetValue(str(path))
 
     def apply_persistent_settings(self, settings: dict[str, str | bool]) -> None:
         self.status.SetLabel("Persistent defaults saved; this run will use them.")
@@ -149,6 +158,7 @@ class ConfigPanel(scrolled.ScrolledPanel):
         values["fade"] = self.text("fade")
         values["fps"] = self.text("fps")
         values["recap_mode"] = gui_common.recap_mode_from_label(self.choice("recap_mode"))
+        values["upload_recaps"] = self.checked("upload_recaps")
         return values
 
     def run(self, _event) -> None:
@@ -201,7 +211,7 @@ class ShowEditorPanel(wx.Panel):
         self.on_saved = on_saved
         self.entries: list[dict[str, str]] = []
         self.selected_index: int | None = None
-        self.fields: dict[str, wx.Window] = {}
+        self.fields: dict[str, EntryControl] = {}
 
         root = wx.BoxSizer(wx.VERTICAL)
         title = wx.StaticText(self, label="Show editor")
@@ -250,14 +260,16 @@ class ShowEditorPanel(wx.Panel):
 
     def value(self, field: str) -> str:
         control = self.fields[field]
-        return control.GetStringSelection().strip() if field == "type" else control.GetValue().strip()
+        if field == "type":
+            return cast(wx.Choice, control).GetStringSelection().strip()
+        return cast(wx.TextCtrl, control).GetValue().strip()
 
     def set_value(self, field: str, value: str) -> None:
         control = self.fields[field]
         if field == "type":
-            control.SetStringSelection(value or "video")
+            cast(wx.Choice, control).SetStringSelection(value or "video")
         else:
-            control.SetValue(value)
+            cast(wx.TextCtrl, control).SetValue(value)
 
     def clear_form(self, _event=None) -> None:
         self.selected_index = None
@@ -356,7 +368,7 @@ class PreparePanel(scrolled.ScrolledPanel):
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.values: dict[str, wx.Window] = {}
+        self.values: dict[str, PrepareControl] = {}
         self.output_queue = mp.Queue()
         self.process: mp.Process | None = None
         self.output_timer = wx.Timer(self)
@@ -366,7 +378,7 @@ class PreparePanel(scrolled.ScrolledPanel):
         self.root_sizer = root
         self.add_section(root, "Prepare media")
         self.add_choice(root, "Type", "mode", ["audio", "video"], "audio")
-        self.values["mode"].Bind(wx.EVT_CHOICE, self.update_mode)
+        cast(wx.Choice, self.values["mode"]).Bind(wx.EVT_CHOICE, self.update_mode)
         self.add_file(root, "Source media", "media_file")
         self.add_cover_extension(root)
         self.add_text(root, "Artist", "artist")
@@ -383,13 +395,10 @@ class PreparePanel(scrolled.ScrolledPanel):
         self.run_button = wx.Button(self, label="Prepare media")
         self.run_button.Bind(wx.EVT_BUTTON, self.run)
         root.Add(self.run_button, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 10)
-        self.status = wx.StaticText(
-            self, label="S3 upload settings are managed in the Settings tab."
-        )
         root.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
         root.Add(wx.StaticText(self, label="Output"), 0, wx.LEFT | wx.RIGHT, 10)
         self.output_box = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
-        self.output_box.SetMinSize((-1, 180))
+        self.output_box.SetMinSize(wx.Size(-1, 180))
         root.Add(self.output_box, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
         self.SetSizer(root)
         self.SetupScrolling(scroll_x=False, scroll_y=True, scrollToTop=False)
@@ -400,14 +409,20 @@ class PreparePanel(scrolled.ScrolledPanel):
         title.SetFont(title.GetFont().Bold().Scale(1.2))
         root.Add(title, 0, wx.TOP | wx.LEFT | wx.RIGHT, 12)
 
-    def add_control(self, root, label: str, control, browse=None):
+    def add_control(
+        self,
+        root: wx.Sizer,
+        label: str,
+        control: wx.Window,
+        browse: Callable[[], None] | None = None,
+    ) -> wx.Sizer:
         row = wx.BoxSizer(wx.HORIZONTAL)
         heading = wx.StaticText(self, label=label)
-        heading.SetMinSize((190, -1))
+        heading.SetMinSize(wx.Size(190, -1))
         row.Add(heading, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
         row.Add(control, 1, wx.EXPAND | wx.RIGHT, 6)
         if browse is not None:
-            button = wx.Button(self, label="…", size=(36, -1))
+            button = wx.Button(self, label="…", size=wx.Size(36, -1))
             button.Bind(wx.EVT_BUTTON, lambda _event: browse())
             row.Add(button, 0)
         root.Add(row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 6)
@@ -439,7 +454,7 @@ class PreparePanel(scrolled.ScrolledPanel):
         self.values[name] = control
         self.add_control(root, label, control, lambda: self.pick_directory(control))
 
-    def add_checkbox(self, root, label: str, name: str, value: bool):
+    def add_checkbox(self, root: wx.Sizer, label: str, name: str, value: bool) -> wx.CheckBox:
         control = wx.CheckBox(self, label=label)
         control.SetValue(value)
         self.values[name] = control
@@ -447,7 +462,7 @@ class PreparePanel(scrolled.ScrolledPanel):
         return control
 
     def update_mode(self, _event=None) -> None:
-        is_audio = self.values["mode"].GetStringSelection() == "audio"
+        is_audio = cast(wx.Choice, self.values["mode"]).GetStringSelection() == "audio"
         self.root_sizer.Show(self.cover_row, is_audio, recursive=True)
         self.root_sizer.Show(self.subtitles_check, not is_audio, recursive=True)
         if is_audio:
@@ -456,12 +471,12 @@ class PreparePanel(scrolled.ScrolledPanel):
         self.Layout()
         self.SetupScrolling(scroll_x=False, scroll_y=True, scrollToTop=False)
 
-    def pick_file(self, control) -> None:
+    def pick_file(self, control: wx.TextCtrl) -> None:
         with wx.FileDialog(self, "Choose media file", style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dialog:
             if dialog.ShowModal() == wx.ID_OK:
                 control.SetValue(dialog.GetPath())
 
-    def pick_directory(self, control) -> None:
+    def pick_directory(self, control: wx.TextCtrl) -> None:
         with wx.DirDialog(self, "Choose output directory") as dialog:
             if dialog.ShowModal() == wx.ID_OK:
                 control.SetValue(dialog.GetPath())
@@ -521,7 +536,7 @@ class SettingsPanel(scrolled.ScrolledPanel):
     def __init__(self, parent, on_saved):
         super().__init__(parent)
         self.on_saved = on_saved
-        self.values: dict[str, wx.Window] = {}
+        self.values: dict[str, SettingsControl] = {}
         settings = app_config.recap_settings()
         root = wx.BoxSizer(wx.VERTICAL)
 
@@ -569,10 +584,10 @@ class SettingsPanel(scrolled.ScrolledPanel):
         title.SetFont(title.GetFont().Bold().Scale(1.2))
         root.Add(title, 0, wx.TOP | wx.LEFT | wx.RIGHT, 12)
 
-    def add_control(self, root, label: str, control) -> None:
+    def add_control(self, root: wx.Sizer, label: str, control: wx.Window) -> None:
         row = wx.BoxSizer(wx.HORIZONTAL)
         heading = wx.StaticText(self, label=label)
-        heading.SetMinSize((190, -1))
+        heading.SetMinSize(wx.Size(190, -1))
         row.Add(heading, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 8)
         row.Add(control, 1, wx.EXPAND)
         root.Add(row, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, 6)
@@ -623,8 +638,8 @@ class SettingsPanel(scrolled.ScrolledPanel):
 
 class RecapFrame(wx.Frame):
     def __init__(self):
-        super().__init__(None, title="World Stage Recap Maker", size=(1100, 820))
-        self.SetMinSize((820, 620))
+        super().__init__(None, title="World Stage Recap Maker", size=wx.Size(1100, 820))
+        self.SetMinSize(wx.Size(820, 620))
         notebook = wx.Notebook(self)
         config = ConfigPanel(notebook)
         editor = ShowEditorPanel(notebook, config.set_input_path)

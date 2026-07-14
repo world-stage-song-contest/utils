@@ -278,9 +278,7 @@ def worker_count(args: common.Args, job_count: int) -> int:
         return min(job_count, args.jobs)
     if not args.multiprocessing:
         return 1
-    # SVT-AV1 is already multithreaded.  A small process count avoids the severe
-    # oversubscription caused by the old half-of-all-CPUs setting.
-    return min(job_count, max(1, mp.cpu_count() // 4))
+    return common.automatic_worker_count(job_count)
 
 
 def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:

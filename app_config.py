@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 import json
 import sys
+from urllib.parse import urlsplit
 
 from platformdirs import user_config_path
 
@@ -23,7 +24,10 @@ RECAP_DEFAULTS: dict[str, str | bool] = {
     "ffmpeg": "ffmpeg",
     "ffprobe": "ffprobe",
     "browser": "",
+    "youtube_attestation_mode": "none",
     "po_token": "",
+    "bgutil_url": "",
+    "song_api_token": "",
     "av1_preset": "8",
     "av1_crf": "30",
     "av1_threads": "0",
@@ -31,6 +35,19 @@ RECAP_DEFAULTS: dict[str, str | bool] = {
     "audio_normalization": "two-pass",
     "jobs": "0",
 }
+
+
+def normalize_bgutil_url(value: str) -> str:
+    """Return a usable HTTP(S) bgutil URL, accepting a bare host as shorthand."""
+    url = value.strip()
+    if not url:
+        return ""
+    if "://" not in url:
+        url = f"http://{url}"
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"Invalid bgutil URL: {value!r}")
+    return url
 
 
 def config_directory() -> Path:
@@ -65,12 +82,25 @@ def _write_config(data: Mapping[str, object]) -> Path:
 def recap_settings() -> dict[str, str | bool]:
     """Return recap defaults with persisted values overlaid."""
     values = RECAP_DEFAULTS.copy()
-    stored = _read_config().get("recap", {})
+    data = _read_config()
+    stored = data.get("recap", {})
     if isinstance(stored, dict):
         for key, default in RECAP_DEFAULTS.items():
             value = stored.get(key)
             if isinstance(value, type(default)):
                 values[key] = value
+        if "youtube_attestation_mode" not in stored:
+            if isinstance(stored.get("po_token"), str) and stored["po_token"]:
+                values["youtube_attestation_mode"] = "po-token"
+            elif isinstance(stored.get("bgutil_url"), str) and stored["bgutil_url"]:
+                values["youtube_attestation_mode"] = "bgutil"
+        bgutil_url = stored.get("bgutil_url")
+        if isinstance(bgutil_url, str):
+            normalized_bgutil_url = normalize_bgutil_url(bgutil_url)
+            values["bgutil_url"] = normalized_bgutil_url
+            if normalized_bgutil_url != bgutil_url:
+                stored["bgutil_url"] = normalized_bgutil_url
+                _write_config(data)
     return values
 
 
@@ -81,7 +111,13 @@ def update_recap_settings(values: Mapping[str, object]) -> Path:
     recap = dict(stored) if isinstance(stored, dict) else {}
     for key, default in RECAP_DEFAULTS.items():
         if key in values and isinstance(values[key], type(default)):
-            recap[key] = values[key]
+            value = values[key]
+            if key == "bgutil_url":
+                if not isinstance(value, str):
+                    raise TypeError("bgutil_url must be a string")
+                recap[key] = normalize_bgutil_url(value)
+            else:
+                recap[key] = value
     data["recap"] = recap
     return _write_config(data)
 

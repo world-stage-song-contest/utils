@@ -50,10 +50,46 @@ class YtDlpLogger:
         pass
 
     def warning(self, message: str) -> None:
-        print(f"[yt-dlp] {message}", file=common.ERR_HANDLE)
+        print(f"[yt-dlp] {message}", file=common.OUT_HANDLE)
 
     def error(self, message: str) -> None:
         print(f"[yt-dlp] {message}", file=common.ERR_HANDLE)
+
+
+@dataclass(frozen=True)
+class DownloadSettings:
+    """Downloader settings shared by recap and batch downloads."""
+
+    browser: str | None
+    ffmpeg: str
+    prefer_av1_opus: bool = False
+    youtube_attestation_mode: str = "none"
+    po_token: str | None = None
+    bgutil_url: str | None = None
+
+
+@dataclass(frozen=True)
+class YouTubeTopicUpload:
+    """The thumbnail metadata needed to save a YouTube Topic upload as audio."""
+
+    thumbnail_url: str
+    thumbnail_suffix: str
+
+
+class YouTubeUnavailableError(RuntimeError):
+    """A YouTube source is unavailable and may be skipped by a batch job."""
+
+
+def is_youtube_unavailable_error(error: BaseException) -> bool:
+    """Recognize yt-dlp's explicit source-unavailable responses only."""
+    message = str(error).lower()
+    return any(marker in message for marker in (
+        "video unavailable",
+        "this video is not available",
+        "private video",
+        "video has been removed",
+        "video is no longer available",
+    ))
 
 
 def youtube_id(url: str) -> str:
@@ -61,6 +97,74 @@ def youtube_id(url: str) -> str:
     if not match:
         raise ValueError(f"Cannot parse YouTube id from: {url}")
     return match.group(1)
+
+
+def is_youtube_url(url: str) -> bool:
+    """Return whether a URL is handled by yt-dlp's YouTube extractor."""
+    return "youtu" in url.lower()
+
+
+def youtube_options(settings: DownloadSettings) -> dict[str, object]:
+    """Build the shared yt-dlp options, including the selected attestation mode."""
+    extractor_args: dict[str, dict[str, list[str]]] = {}
+    if settings.youtube_attestation_mode == "po-token":
+        if not settings.po_token:
+            raise ValueError("YouTube attestation mode 'po-token' requires a PO token")
+        extractor_args["youtube"] = {"po_token": [settings.po_token]}
+    elif settings.youtube_attestation_mode == "bgutil":
+        if not settings.bgutil_url:
+            raise ValueError("YouTube attestation mode 'bgutil' requires a bgutil URL")
+        extractor_args["youtubepot-bgutilhttp"] = {"base_url": [settings.bgutil_url]}
+    elif settings.youtube_attestation_mode != "none":
+        raise ValueError(f"Unknown YouTube attestation mode: {settings.youtube_attestation_mode!r}")
+    options: dict[str, object] = {
+        "extractor_args": extractor_args,
+        "logger": YtDlpLogger(),
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+    }
+    if settings.browser:
+        options["cookiesfrombrowser"] = (settings.browser,)
+    if settings.ffmpeg != "ffmpeg":
+        options["ffmpeg_location"] = settings.ffmpeg
+    return options
+
+
+def youtube_topic_upload(url: str, settings: DownloadSettings) -> YouTubeTopicUpload | None:
+    """Return Topic-upload artwork metadata, or ``None`` for a normal video.
+
+    YouTube labels auto-generated music channels as ``Artist - Topic``.  These
+    uploads are audio releases, so the batch downloader stores them as M4A
+    together with yt-dlp's selected thumbnail instead of treating them as video.
+    """
+    if not is_youtube_url(url):
+        return None
+    try:
+        options = youtube_options(settings)
+        options["skip_download"] = True
+        with YoutubeDL(cast(Any, options)) as downloader:
+            info = downloader.extract_info(url, download=False)
+    except Exception as exc:
+        message = f"Could not inspect YouTube media {url}: {exc}"
+        print(message, file=common.ERR_HANDLE)
+        if is_youtube_unavailable_error(exc):
+            raise YouTubeUnavailableError(message) from exc
+        raise RuntimeError(message) from exc
+    if not isinstance(info, dict):
+        raise RuntimeError(f"yt-dlp did not return metadata for {url}")
+    if not any(
+        isinstance(value, str) and value.strip().lower().endswith(" - topic")
+        for value in (info.get("channel"), info.get("uploader"))
+    ):
+        return None
+    thumbnail_url = info.get("thumbnail")
+    if not isinstance(thumbnail_url, str) or not thumbnail_url:
+        raise RuntimeError(f"YouTube Topic upload has no thumbnail: {url}")
+    thumbnail_suffix = Path(urlparse(thumbnail_url).path).suffix.lower()
+    if thumbnail_suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise RuntimeError(f"Unsupported YouTube thumbnail format {thumbnail_suffix!r}: {thumbnail_url}")
+    return YouTubeTopicUpload(thumbnail_url, thumbnail_suffix)
 
 
 def cache_database_path(sources_dir: Path) -> Path:
@@ -164,6 +268,10 @@ def is_world_stage_url(url: str) -> bool:
     return (urlparse(url).hostname or "").lower() == WORLD_STAGE_HOST
 
 
+def is_google_drive_url(url: str) -> bool:
+    return _GDRIVE_RE.search(url) is not None
+
+
 def world_stage_etag(url: str) -> str | None:
     request = Request(url, headers=HTTP_HEADERS, method="HEAD")
     try:
@@ -213,31 +321,51 @@ def link_object(existing: Path, alias: Path) -> Path:
     return alias
 
 
-def fetch(url: str, media_type: str, destination: Path, args: common.Args) -> None:
-    if "youtu" in url:
-        format_selector = "ba[ext=m4a]/ba" if media_type == "a" else "bv*+ba/b"
-        options: dict[str, object] = {
+def fetch_external(
+    url: str,
+    media_type: str,
+    destination: Path,
+    settings: DownloadSettings,
+) -> None:
+    """Download one external media file to an exact destination path."""
+    if is_youtube_url(url):
+        if media_type == "a":
+            format_selector = "ba[acodec^=opus]/ba" if settings.prefer_av1_opus else "ba[ext=m4a]/ba"
+        elif settings.prefer_av1_opus:
+            format_selector = (
+                "bv*[vcodec^=av01]+ba[acodec^=opus]/"
+                "bv*[vcodec^=av01]+ba/"
+                "bv*+ba[acodec^=opus]/bv*+ba/b"
+            )
+        else:
+            format_selector = "bv*+ba/b"
+        output_template = str(destination.with_suffix("")) + ".%(ext)s"
+        options = youtube_options(settings)
+        options.update({
             "format": format_selector,
-            "outtmpl": str(destination),
-            "extractor_args": {
-                "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]},
-            },
-            "logger": YtDlpLogger(),
-            "quiet": True,
-            "no_warnings": True,
-        }
+            "outtmpl": output_template,
+        })
         if media_type == "v":
             options["merge_output_format"] = "mp4"
-        if args.browser:
-            options["cookiesfrombrowser"] = (args.browser,)
-        if args.ffmpeg != "ffmpeg":
-            options["ffmpeg_location"] = args.ffmpeg
         try:
             with YoutubeDL(cast(Any, options)) as downloader:
-                downloader.download([url])
+                status = downloader.download([url])
+            if status:
+                raise RuntimeError(f"yt-dlp exited with status {status}")
+            prefix = destination.with_suffix("").name
+            files = [
+                path for path in destination.parent.glob(f"{prefix}.*")
+                if path.is_file() and path.suffix not in {".part", ".ytdl"}
+            ]
+            if len(files) != 1:
+                names = ", ".join(str(path) for path in files) or "none"
+                raise RuntimeError(f"yt-dlp did not produce one merged media file for {url}: {names}")
+            files[0].replace(destination)
         except Exception as exc:
             message = f"Could not download YouTube media {url}: {exc}"
             print(message, file=common.ERR_HANDLE)
+            if is_youtube_unavailable_error(exc):
+                raise YouTubeUnavailableError(message) from exc
             raise RuntimeError(message) from exc
     elif match := _GDRIVE_RE.search(url):
         try:
@@ -250,6 +378,19 @@ def fetch(url: str, media_type: str, destination: Path, args: common.Args) -> No
             raise RuntimeError(f"Google Drive download did not create expected file: {destination}")
     else:
         download_direct(url, destination)
+
+
+def fetch(url: str, media_type: str, destination: Path, args: common.Args) -> None:
+    """Download a recap source using the recap command's configured tools."""
+    fetch_external(
+        url, media_type, destination,
+        DownloadSettings(
+            args.browser, args.ffmpeg,
+            youtube_attestation_mode=args.youtube_attestation_mode,
+            po_token=args.po_token,
+            bgutil_url=args.bgutil_url,
+        ),
+    )
 
 
 def fetch_cached(

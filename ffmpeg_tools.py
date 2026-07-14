@@ -28,6 +28,12 @@ class VideoProperties:
 
 
 @dataclass(frozen=True)
+class StreamCodecs:
+    video: str
+    audio: str
+
+
+@dataclass(frozen=True)
 class MediaTags:
     title: str
     artist: str
@@ -115,6 +121,23 @@ class FFmpeg:
             raise ValueError(f"Invalid sample aspect ratio for {path}: {stream['sample_aspect_ratio']!r}")
         return VideoProperties((width * sar_width) / (height * sar_height), height)
 
+    def stream_codecs(self, path: Path) -> StreamCodecs:
+        """Return the primary video and audio codec names from a media file."""
+        result = self.run([
+            self.probe_executable, "-v", "error", "-show_entries",
+            "stream=codec_type,codec_name", "-of", "json", str(path),
+        ], capture=True)
+        streams = json.loads(_text(result.stdout)).get("streams", [])
+        codecs = {
+            str(stream["codec_type"]): str(stream["codec_name"])
+            for stream in streams
+            if stream.get("codec_type") in {"video", "audio"} and "codec_name" in stream
+        }
+        try:
+            return StreamCodecs(video=codecs["video"], audio=codecs["audio"])
+        except KeyError as exc:
+            raise RuntimeError(f"Expected video and audio streams in {path}") from exc
+
     def display_aspect(self, path: Path) -> float:
         return self.video_properties(path).display_aspect
 
@@ -179,6 +202,38 @@ class FFmpeg:
             "-f", "mp4", str(output),
         ])
         self.run(command)
+
+    def make_av1_opus_video(
+        self,
+        source: Path,
+        output: Path,
+        tags: MediaTags,
+        encoding: RecapEncoding,
+        preserve_flac: bool,
+    ) -> StreamCodecs:
+        """Tag a source video, encoding only streams outside the batch policy."""
+        codecs = self.stream_codecs(source)
+        video_args = ["-c:v", "copy"]
+        if codecs.video != "av1":
+            video_args = [
+                "-c:v", "libsvtav1", "-preset", str(encoding.av1_preset),
+                "-crf", str(encoding.av1_crf), "-pix_fmt", "yuv420p",
+            ]
+            if encoding.av1_threads > 0:
+                video_args.extend(["-svtav1-params", f"lp={encoding.av1_threads}"])
+
+        keep_flac = preserve_flac and codecs.audio == "flac"
+        audio_args = ["-c:a", "copy"] if codecs.audio == "opus" or keep_flac else [
+            "-c:a", "libopus", "-b:a", encoding.opus_bitrate,
+        ]
+        experimental_args = ["-strict", "-2"] if keep_flac else []
+        self.run([
+            self.executable, "-y", "-hide_banner", "-i", str(source),
+            "-map", "0:v:0", "-map", "0:a:0", *video_args, *audio_args,
+            "-map_metadata", "-1", *tags.arguments(), *experimental_args,
+            "-movflags", "+faststart", "-f", "mp4", str(output),
+        ])
+        return codecs
 
     def render_recap(
         self,

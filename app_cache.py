@@ -51,6 +51,16 @@ def initialize_database() -> Path:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recap_api_cache (
+                url TEXT PRIMARY KEY,
+                etag TEXT,
+                path TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
     return database
 
 
@@ -108,3 +118,21 @@ def store_upload(path: Path, endpoint_url: str, bucket: str, object_name: str | 
 def clear_upload_cache() -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM upload_cache")
+
+
+def cached_api_response(url: str) -> tuple[str | None, Path] | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT etag, path FROM recap_api_cache WHERE url = ?", (url,)).fetchone()
+    return None if row is None else (row[0], Path(row[1]))
+
+
+def store_api_response(url: str, etag: str | None, path: Path) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO recap_api_cache (url, etag, path) VALUES (?, ?, ?)
+            ON CONFLICT(url) DO UPDATE SET etag = excluded.etag, path = excluded.path,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (url, etag, str(path.resolve())),
+        )

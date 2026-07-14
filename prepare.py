@@ -11,7 +11,7 @@ import subprocess as sp
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Union
+from typing import Any, IO, Union
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -31,6 +31,14 @@ class S3Config:
     endpoint_url: str
     bucket: str
     profile: str
+
+
+@dataclass(frozen=True)
+class UploadSession:
+    """A configured S3 target and, unless dry-running, its initialized client."""
+
+    config: S3Config
+    client: Any | None
 
 
 class S3NotConfigured(RuntimeError):
@@ -156,29 +164,33 @@ class SongData:
         return self._year, self._cc
 
     def formatted_artist(self) -> str:
-        parts = self.artist.split(";")
-        if len(parts) == 1:
-            return self.artist
-        elif len(parts) == 2:
-            return " & ".join(parts)
-        else:
-            return ", ".join(parts[:-1]) + " & " + parts[-1]
+        return formatted_artist(self.artist)
 
     def media_tags(self) -> ffmpeg_tools.MediaTags:
         year, cc = self.year_cc()
-        scheme = country_schemes.schemes.get(cc.upper())
-        if scheme is None:
-            raise ValueError(f"unknown country code '{cc}' for file {self.audio_path}")
-        country = scheme.name
-        return ffmpeg_tools.MediaTags(
-            title=self.title,
-            artist=self.artist,
-            album=f"{country} {year}",
-            keywords=f"{country};{year}",
-            date=year,
-            location=country,
-            language=self.language,
-        )
+        return media_tags(year, cc, self.artist, self.title, self.language)
+
+
+def media_tags(
+    year: str, cc: str, artist: str, title: str, language: str, country: str | None = None,
+) -> ffmpeg_tools.MediaTags:
+    """Build the standard World Stage metadata for a country performance."""
+    scheme = country_schemes.schemes.get(cc.upper())
+    if scheme is not None:
+        country_name = scheme.name
+    elif country:
+        country_name = country
+    else:
+        raise ValueError(f"unknown country code '{cc}'")
+    return ffmpeg_tools.MediaTags(
+        title=title,
+        artist=artist,
+        album=f"{country_name} {year}",
+        keywords=f"{country_name};{year}",
+        date=year,
+        location=country_name,
+        language=language,
+    )
 
 quiet = ContextVar("quiet", default=False)
 dry_run = ContextVar("dry_run", default=False)
@@ -261,8 +273,33 @@ def confirm_overwrite(path: Path) -> bool:
     inp = input(f"File {path} already exists. Overwrite? [y/N]") or 'n'
     return inp.lower().startswith('y')
 
-def make_json(song: SongData, duration: int, mode: str) -> Path:
-    json_path = song.json_path()
+def formatted_artist(artist: str) -> str:
+    """Format the semicolon-separated artist value used in CDN metadata."""
+    parts = artist.split(";")
+    if len(parts) == 1:
+        return artist
+    if len(parts) == 2:
+        return " & ".join(parts)
+    return ", ".join(parts[:-1]) + " & " + parts[-1]
+
+
+def write_json(
+    *,
+    json_path: Path,
+    base_name: str,
+    artist: str,
+    title: str,
+    duration: int,
+    mode: str,
+    image_name: str = "",
+    subtitles_name: str = "",
+    overwrite_existing: bool | None = None,
+) -> Path:
+    """Write the canonical CDN JSON document for one prepared media file.
+
+    ``None`` retains prepare.py's interactive overwrite behaviour.  Batch jobs
+    pass an explicit value so their worker processes never require input.
+    """
 
     if not quiet.get():
         print(f"Creating the json file at {json_path}", file=OUT_HANDLE)
@@ -270,7 +307,9 @@ def make_json(song: SongData, duration: int, mode: str) -> Path:
     if dry_run.get():
         return json_path
 
-    if not confirm_overwrite(json_path):
+    if overwrite_existing is None and not confirm_overwrite(json_path):
+        return json_path
+    if overwrite_existing is False and json_path.exists():
         return json_path
 
     if mode == 'video':
@@ -283,11 +322,11 @@ def make_json(song: SongData, duration: int, mode: str) -> Path:
         raise ValueError(f"Unknown mode: {mode}")
 
     data = {
-        "title": f"{song.formatted_artist()} – {song.title}",
+        "title": f"{formatted_artist(artist)} – {title}",
         "duration": duration,
         "sources": [
             {
-                "url": f"{base_url}/{song.base_name()}.{ext}",
+                "url": f"{base_url}/{base_name}.{ext}",
                 "contentType": ct,
                 "quality": 1080
             }
@@ -295,20 +334,55 @@ def make_json(song: SongData, duration: int, mode: str) -> Path:
     }
 
     if mode == 'audio':
-        data['thumbnail'] = f"{base_url}/{song.image_name()}"
+        data['thumbnail'] = f"{base_url}/{image_name}"
 
-    if song.subtitles:
+    if subtitles_name:
         data['textTracks'] = [{
             "default": True,
             "name": "Subtitles",
             "contentType": "text/vtt",
-            "url": f"{base_url}/{song.subtitles_name()}"
+            "url": f"{base_url}/{subtitles_name}"
         }]
 
     with json_path.open('w') as f:
         json.dump(data, f, ensure_ascii=True, indent=4)
 
     return json_path
+
+
+def make_json(song: SongData, duration: int, mode: str) -> Path:
+    """Create metadata for a prepare.py request using the canonical schema."""
+    return write_json(
+        json_path=song.json_path(), base_name=song.base_name(), artist=song.artist,
+        title=song.title, duration=duration, mode=mode, image_name=song.image_name(),
+        subtitles_name=song.subtitles_name() if song.subtitles else "",
+    )
+
+
+def make_json_for_media(
+    media_path: Path,
+    *,
+    artist: str,
+    title: str,
+    duration: int,
+    mode: str,
+    image_path: Path | None = None,
+    overwrite_existing: bool,
+) -> Path:
+    """Create preparation-compatible JSON without requiring a ``SongData`` input.
+
+    Batch metadata accepts historical language values that ``SongData`` rightly
+    rejects for manual preparation, so this small adapter takes the already
+    prepared file and its display metadata directly.
+    """
+    if mode == "audio" and image_path is None:
+        raise ValueError("Audio metadata requires a cover image")
+    return write_json(
+        json_path=media_path.with_suffix(".json"), base_name=media_path.stem,
+        artist=artist, title=title, duration=duration, mode=mode,
+        image_name=image_path.name if image_path is not None else "",
+        overwrite_existing=overwrite_existing,
+    )
 
 def create_s3_client(config: S3Config):
     """Create an S3-compatible client using the configured AWS profile."""
@@ -319,6 +393,21 @@ def create_s3_client(config: S3Config):
         message = f"Could not initialize S3 profile {config.profile!r}: {exc}"
         print(message, file=ERR_HANDLE)
         raise RuntimeError(message) from exc
+
+
+def open_upload_session(enabled: bool, *, dry_run_mode: bool = False) -> UploadSession | None:
+    """Open the shared cached S3 upload session used by every workflow.
+
+    Configuration errors remain visible to the caller so each command can
+    decide whether optional uploads should be skipped or should stop the run.
+    """
+    if not enabled:
+        return None
+    config = load_s3_config()
+    if dry_run_mode:
+        return UploadSession(config, None)
+    app_cache.initialize_database()
+    return UploadSession(config, create_s3_client(config))
 
 
 def upload(path: Path | None, config: S3Config, client, object_name: str | None = None) -> None:
@@ -336,6 +425,12 @@ def upload(path: Path | None, config: S3Config, client, object_name: str | None 
         extra_args['ContentType'] = 'video/mp4'
     elif suffix == '.m4a':
         extra_args['ContentType'] = 'audio/mp4'
+    elif suffix in {'.jpg', '.jpeg'}:
+        extra_args['ContentType'] = 'image/jpeg'
+    elif suffix == '.png':
+        extra_args['ContentType'] = 'image/png'
+    elif suffix == '.webp':
+        extra_args['ContentType'] = 'image/webp'
 
     print(f"Uploading {path} to s3://{config.bucket}/{object_name}", file=OUT_HANDLE)
     if dry_run.get():
@@ -370,16 +465,11 @@ def execute(request: PrepareRequest) -> None:
             app_cache.clear_upload_cache()
             print(f"Cleared upload cache records in {app_cache.database_path()}", file=ERR_HANDLE)
 
-    upload_enabled = request.upload and s3_configured()
-    if request.upload and not upload_enabled:
+    try:
+        upload_session = open_upload_session(request.upload, dry_run_mode=request.dry_run_mode)
+    except S3NotConfigured:
         qprint("S3 is not configured; continuing without uploads.")
-    s3_config = None
-    s3_client = None
-    if upload_enabled:
-        s3_config = load_s3_config()
-        if not request.dry_run_mode:
-            app_cache.initialize_database()
-            s3_client = create_s3_client(s3_config)
+        upload_session = None
 
     img_type = f'.{request.image_type.lstrip(".")}' if request.mode == "audio" and request.image_type else None
     if request.mode == "audio" and img_type is None:
@@ -407,12 +497,11 @@ def execute(request: PrepareRequest) -> None:
     duration = 0 if dry_run.get() else media.duration(media_path)
     json_path = make_json(song, duration, request.mode)
 
-    if upload_enabled:
-        assert s3_config is not None
-        upload(media_path, s3_config, s3_client)
-        upload(json_path, s3_config, s3_client)
-        upload(song.image_path(), s3_config, s3_client)
-        upload(song.subtitles_path(), s3_config, s3_client)
+    if upload_session is not None:
+        upload(media_path, upload_session.config, upload_session.client)
+        upload(json_path, upload_session.config, upload_session.client)
+        upload(song.image_path(), upload_session.config, upload_session.client)
+        upload(song.subtitles_path(), upload_session.config, upload_session.client)
 
 
 def main() -> None:

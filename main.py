@@ -13,9 +13,9 @@ import ffmpeg_tools
 import recap
 #import thumbnails
 import app_config
-import app_cache
 import common
 import prepare
+import recap_api
 
 def cleanup(tmp: Path) -> None:
     for root, dirs, files in tmp.walk(top_down=False):
@@ -81,6 +81,10 @@ def resolve_output_size(clips: common.Clips, args: common.Args) -> None:
         )
 
 def exec(args: common.Args) -> None:
+    if args.api_query is not None:
+        if not isinstance(args.api_query, recap_api.ApiQuery):
+            raise TypeError("api_query must be an ApiQuery")
+        args.csv = recap_api.fetch_to_cache(args.api_query)
     if shutil.which(args.ffmpeg) is None:
         print(f"Error: {args.ffmpeg} not found", file=common.ERR_HANDLE)
         sys.exit(1)
@@ -90,15 +94,11 @@ def exec(args: common.Args) -> None:
         print(f"Error: {renderer_path} not found", file=common.ERR_HANDLE)
         sys.exit(1)
 
-    s3_config = None
-    s3_client = None
-    if args.upload_recaps:
-        try:
-            s3_config = prepare.load_s3_config()
-            app_cache.initialize_database()
-            s3_client = prepare.create_s3_client(s3_config)
-        except prepare.S3NotConfigured as exc:
-            print(f"S3 is unavailable; continuing without recap uploads: {exc}", file=common.ERR_HANDLE)
+    try:
+        upload_session = prepare.open_upload_session(args.upload_recaps)
+    except prepare.S3NotConfigured as exc:
+        print(f"S3 is unavailable; continuing without recap uploads: {exc}", file=common.ERR_HANDLE)
+        upload_session = None
 
     start = time.time()
     # Download videos
@@ -116,7 +116,7 @@ def exec(args: common.Args) -> None:
     # Create recap video
     recap_outputs = recap.main(clips, args)
 
-    if s3_config is not None:
+    if upload_session is not None:
         # The preparation uploader already supplies content types and cache
         # checks.  Point its status handles at the recap process so GUI users
         # receive the same live upload messages as command-line users.
@@ -124,7 +124,9 @@ def exec(args: common.Args) -> None:
         prepare.ERR_HANDLE = common.ERR_HANDLE
         for outputs in recap_outputs.values():
             for output in outputs:
-                prepare.upload(output, s3_config, s3_client, f"recaps/{output.name}")
+                prepare.upload(
+                    output, upload_session.config, upload_session.client, f"recaps/{output.name}",
+                )
 
     # Cleanup temporary files
     if args.cleanup:
@@ -139,11 +141,14 @@ def setup_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Process recap videos.")
     config = app_config.recap_settings()
 
-    parser.add_argument("csv", type=Path, help="CSV or JSON file with recap metadata")
+    parser.add_argument("csv", type=Path, nargs="?", help="CSV or JSON file with recap metadata")
+    recap_api.add_cli_arguments(parser)
     parser.add_argument("--tmp", '-t', type=Path, default="temp", help="Temporary directory for clips and cards")
     parser.add_argument("--style", '-S', default="70s", help="Style to use for the cards")
     parser.add_argument("--browser", '-b', default=config["browser"] or None, help="Browser to use for downloads")
+    parser.add_argument("--youtube-attestation-mode", choices=["none", "po-token", "bgutil"], default=config["youtube_attestation_mode"], help="YouTube attestation provider")
     parser.add_argument("--po-token", '-p', default=config["po_token"], help="PO token for YouTube downloads")
+    parser.add_argument("--bgutil-url", default=config["bgutil_url"], help="Optional bgutil attestation server URL for YouTube downloads")
     parser.add_argument("--size", '-s', type=common.parse_size, help="Output size WxH (overrides automatic aspect ratio)")
     parser.add_argument("--default-height", type=int, default=480, help="Default output height when all entries are audio")
     parser.add_argument("--fps", '-F', type=int, default=60, help="Output video FPS")
@@ -174,7 +179,10 @@ def setup_configure_args() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Read or update recap-maker defaults.")
     parser.add_argument("--show", action="store_true", help="Print the current configuration and exit")
     parser.add_argument("--browser", default=argparse.SUPPRESS)
+    parser.add_argument("--youtube-attestation-mode", choices=["none", "po-token", "bgutil"], default=argparse.SUPPRESS)
     parser.add_argument("--po-token", default=argparse.SUPPRESS)
+    parser.add_argument("--bgutil-url", default=argparse.SUPPRESS)
+    parser.add_argument("--song-api-token", default=argparse.SUPPRESS)
     parser.add_argument("--av1-preset", default=argparse.SUPPRESS)
     parser.add_argument("--av1-crf", default=argparse.SUPPRESS)
     parser.add_argument("--av1-threads", default=argparse.SUPPRESS)
@@ -192,7 +200,10 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] == "configure":
         args = setup_configure_args().parse_args(sys.argv[2:])
         if args.show:
-            print(json.dumps(app_config.recap_settings(), indent=2))
+            settings = app_config.recap_settings()
+            if settings["song_api_token"]:
+                settings["song_api_token"] = "********"
+            print(json.dumps(settings, indent=2))
             return
         values = {key: value for key, value in vars(args).items() if key != "show"}
         if not values:
@@ -209,19 +220,24 @@ def main() -> None:
 
     args = setup_args().parse_args()
 
+    csv, api_query = recap_api.source_from_cli(args, "csv")
+
     if args.reverse and args.direct:
         print("--only-reverse and --only-straight parameters are mutually exclusive", file=sys.stderr)
         sys.exit(2)
 
     exec(common.Args(
-        csv=args.csv,
+        csv=csv,
+        api_query=api_query,
         style=args.style,
         tmpdir=args.tmp,
         vidsdir=args.tmp / "sources",
         cardsdir=args.tmp / "cards",
         clipsdir=args.tmp / "clips",
         browser=args.browser,
-        po_token=args.po_token,
+        youtube_attestation_mode=args.youtube_attestation_mode,
+        po_token=args.po_token or None,
+        bgutil_url=args.bgutil_url or None,
         size=args.size,
         default_height=args.default_height,
         fps=args.fps,

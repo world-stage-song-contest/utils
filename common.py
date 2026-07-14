@@ -6,6 +6,7 @@ import sys
 import ctypes
 import csv
 import json
+import multiprocessing as mp
 from typing import cast
 
 OUT_HANDLE = sys.stdout
@@ -20,6 +21,13 @@ def is_admin() -> bool:
 def parse_size(arg: str) -> tuple[int, int]:
     w, h = map(int, arg.lower().split("x"))
     return w, h
+
+
+def automatic_worker_count(job_count: int) -> int:
+    """Choose a conservative process count for multithreaded AV1 work."""
+    if job_count < 1:
+        raise ValueError("job_count must be positive")
+    return min(job_count, max(1, mp.cpu_count() // 4))
 
 
 def media_type(value: object) -> str:
@@ -78,10 +86,13 @@ Clips = dict[tuple[str, str], dict[str, Path]]
 @dataclass
 class Args:
     csv: Path
+    api_query: object | None
     style: str
     tmpdir: Path
     browser: str | None
+    youtube_attestation_mode: str
     po_token: str | None
+    bgutil_url: str | None
     size: tuple[int, int] | None
     default_height: int
     fps: int
@@ -106,8 +117,6 @@ class Args:
     cardsdir: Path
     clipsdir: Path
     upload_recaps: bool = True
-
-from country_schemes import CS, schemes
 
 
 colours = {

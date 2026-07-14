@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
+from dataclasses import dataclass
 from pathlib import Path
 import json
 import traceback
+from typing import Literal, cast
 
 import common
 import main
 import prepare
 import app_config
+import batch
+import recap_api
 
 
 SHOW_FIELDS = (
@@ -37,23 +42,80 @@ class QueueWriter:
         self.output_queue = output_queue
         self.tag = tag
 
-    def write(self, message: str) -> None:
+    def write(self, message: str) -> int:
         if message:
             self.output_queue.put((self.tag, message))
+        return len(message)
 
     def flush(self) -> None:
         pass
 
 
-def run_recap_process(args: common.Args, output_queue) -> None:
-    """Run the maker while forwarding its output through ``output_queue``."""
-    common.OUT_HANDLE = QueueWriter(output_queue, "stdout")
-    common.ERR_HANDLE = QueueWriter(output_queue, "stderr")
+@dataclass(frozen=True)
+class GuiWorkerJob:
+    """One GUI operation run through the single multiprocessing entry point."""
+
+    kind: Literal["recap", "prepare", "batch"]
+    request: common.Args | prepare.PrepareRequest | batch.BatchDownloadRequest
+
+
+def _run_gui_process(
+    output_queue,
+    operation: Callable[[], None],
+    *,
+    use_common_handles: bool,
+    use_prepare_handles: bool,
+    redirect_standard_streams: bool,
+) -> None:
+    """Run one operation with the selected application streams sent to the GUI."""
+    stdout = QueueWriter(output_queue, "stdout")
+    stderr = QueueWriter(output_queue, "stderr")
+    if use_common_handles:
+        common.OUT_HANDLE = stdout
+        common.ERR_HANDLE = stderr
+    if use_prepare_handles:
+        prepare.OUT_HANDLE = stdout
+        prepare.ERR_HANDLE = stderr
     try:
-        main.exec(args)
+        stdout_context = redirect_stdout(stdout) if redirect_standard_streams else nullcontext()
+        stderr_context = redirect_stderr(stderr) if redirect_standard_streams else nullcontext()
+        with stdout_context, stderr_context:
+            operation()
     except BaseException:
-        traceback.print_exc(file=common.ERR_HANDLE)
+        traceback.print_exc(file=stderr)
         raise
+
+
+def run_gui_process(job: GuiWorkerJob, output_queue) -> None:
+    """Dispatch every GUI worker through one picklable multiprocessing target."""
+    if job.kind == "recap":
+        if not isinstance(job.request, common.Args):
+            raise TypeError("Recap GUI jobs require common.Args")
+        request = cast(common.Args, job.request)
+        _run_gui_process(
+            output_queue, lambda: main.exec(request), use_common_handles=True,
+            use_prepare_handles=False, redirect_standard_streams=False,
+        )
+        return
+    if job.kind == "prepare":
+        if not isinstance(job.request, prepare.PrepareRequest):
+            raise TypeError("Prepare GUI jobs require PrepareRequest")
+        request = cast(prepare.PrepareRequest, job.request)
+        _run_gui_process(
+            output_queue, lambda: prepare.execute(request), use_common_handles=False,
+            use_prepare_handles=True, redirect_standard_streams=False,
+        )
+        return
+    if job.kind == "batch":
+        if not isinstance(job.request, batch.BatchDownloadRequest):
+            raise TypeError("Batch GUI jobs require BatchDownloadRequest")
+        request = cast(batch.BatchDownloadRequest, job.request)
+        _run_gui_process(
+            output_queue, lambda: batch.download_videos(request), use_common_handles=True,
+            use_prepare_handles=True, redirect_standard_streams=True,
+        )
+        return
+    raise ValueError(f"Unsupported GUI job kind: {job.kind}")
 
 
 def build_prepare_request(values: Mapping[str, object]) -> prepare.PrepareRequest:
@@ -83,15 +145,36 @@ def build_prepare_request(values: Mapping[str, object]) -> prepare.PrepareReques
     )
 
 
-def run_prepare_process(request: prepare.PrepareRequest, output_queue) -> None:
-    """Run one preparation request while forwarding application output."""
-    prepare.OUT_HANDLE = QueueWriter(output_queue, "stdout")
-    prepare.ERR_HANDLE = QueueWriter(output_queue, "stderr")
-    try:
-        prepare.execute(request)
-    except BaseException:
-        traceback.print_exc(file=prepare.ERR_HANDLE)
-        raise
+def build_batch_download_request(values: Mapping[str, object]) -> batch.BatchDownloadRequest:
+    """Convert Batch download tab values into a batch request."""
+    def text(name: str) -> str:
+        value = values[name]
+        return value.strip() if isinstance(value, str) else str(value).strip()
+
+    input_path = text("input")
+    if not input_path:
+        raise ValueError("Choose a JSON or CSV input file")
+    output_directory = text("output_directory")
+    if not output_directory:
+        raise ValueError("Choose an output directory")
+    temporary_directory = text("temporary_directory")
+    jobs = int(text("jobs"))
+    if jobs < 0:
+        raise ValueError("Concurrent downloads cannot be negative")
+    return batch.BatchDownloadRequest(
+        input=Path(input_path),
+        api_query=None,
+        output_directory=Path(output_directory),
+        temporary_directory=Path(temporary_directory) if temporary_directory else None,
+        browser=None,
+        ffmpeg=None,
+        ffprobe=None,
+        jobs=jobs,
+        upload=bool(values["upload"]),
+        update_song_links=bool(values["update_song_links"]),
+        overwrite=bool(values["overwrite"]),
+        dry_run=bool(values["dry_run"]),
+    )
 
 
 def recap_mode_from_label(label: str) -> str:
@@ -115,9 +198,12 @@ def build_args(values: Mapping[str, object]) -> common.Args:
 
     return common.Args(
         csv=Path(text("input_file")),
+        api_query=None,
         tmpdir=tmpdir,
         browser=text("browser").lower() or None,
+        youtube_attestation_mode=text("youtube_attestation_mode"),
         po_token=text("po_token") or None,
+        bgutil_url=text("bgutil_url") or None,
         style=text("style"),
         size=common.parse_size(size_text) if size_text else None,
         default_height=int(text("default_height")),

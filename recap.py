@@ -63,10 +63,12 @@ def file_identity(path: Path) -> tuple[str, int, int]:
 
 def output_fingerprint(rows: list[Data], args: common.Args, reverse: bool) -> str:
     value = {
+        # Version 3 corrects non-square-pixel video sources by preserving
+        # their display aspect ratio while converting them to square pixels.
         # Version 2 fixes audio artwork: attached pictures are now opened as
         # an unseeked visual input, rather than being discarded by the audio
         # snippet seek that starts after their timestamp-zero frame.
-        "version": 2,
+        "version": 3,
         "reverse": reverse,
         "size": args.size,
         "fps": args.fps,
@@ -132,10 +134,10 @@ def validate_media(row: Data, probe: ffmpeg_tools.MediaProbe) -> None:
 
 
 def video_normalizer(width: int, height: int) -> str:
-    """Fit the input in the output frame with one high-quality scale operation."""
+    """Fit an input's display aspect ratio in a square-pixel output frame."""
     return (
         f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
-        f"force_divisible_by=2:flags=lanczos,setsar=1,"
+        f"force_divisible_by=2:flags=lanczos:reset_sar=1,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih):color=black,setsar=1"
     )
 

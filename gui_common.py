@@ -161,6 +161,9 @@ def build_batch_download_request(values: Mapping[str, object]) -> batch.BatchDow
     jobs = int(text("jobs"))
     if jobs < 0:
         raise ValueError("Concurrent downloads cannot be negative")
+    target_height = int(text("target_height"))
+    if target_height <= 0:
+        raise ValueError("Target video height must be positive")
     return batch.BatchDownloadRequest(
         input=Path(input_path),
         api_query=None,
@@ -170,6 +173,7 @@ def build_batch_download_request(values: Mapping[str, object]) -> batch.BatchDow
         ffmpeg=None,
         ffprobe=None,
         jobs=jobs,
+        target_height=target_height,
         upload=bool(values["upload"]),
         update_song_links=bool(values["update_song_links"]),
         overwrite=bool(values["overwrite"]),

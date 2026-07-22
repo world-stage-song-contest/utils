@@ -51,6 +51,7 @@ class BatchDownloadRequest:
     ffmpeg: str | None
     ffprobe: str | None
     jobs: int
+    target_height: int
     upload: bool
     update_song_links: bool
     overwrite: bool
@@ -65,6 +66,7 @@ class BatchTask:
     downloader_settings: download.DownloadSettings
     ffprobe: str
     encoding: ffmpeg_tools.RecapEncoding
+    target_height: int
     overwrite: bool
 
 
@@ -235,6 +237,7 @@ def process_task(task: BatchTask) -> BatchResult:
         _media_tags(task.video),
         task.encoding,
         preserve_flac=download.is_google_drive_url(task.video.media_link),
+        maximum_height=task.target_height,
     )
     raw_path.unlink()
     return BatchResult(task.video, destination, "complete", f"{source_codecs.video}/{source_codecs.audio}")
@@ -257,6 +260,7 @@ def download_one_batch(
     ffprobe: str,
     encoding: ffmpeg_tools.RecapEncoding,
     jobs: int,
+    target_height: int,
     s3_config: prepare.S3Config | None,
     s3_client: Any,
     song_api_token: str | None,
@@ -271,6 +275,7 @@ def download_one_batch(
                 continue
             raw_path = raw_directory / f"{video.name}.download.mov"
             print(f"[batch] Would download {video.media_link} -> {raw_path}")
+            print(f"[batch] Would limit video output to {target_height}p")
             print(f"[batch] Would tag {raw_path} -> {destination}")
             if s3_config is not None:
                 print(f"[batch] Would upload {destination} to s3://{s3_config.bucket}/{destination.name}")
@@ -285,7 +290,7 @@ def download_one_batch(
             continue
         print(f"[batch] Queued {video.name} from {video.media_link}")
         tasks.append(BatchTask(
-            video, destination, raw_directory, downloader_settings, ffprobe, encoding, overwrite,
+            video, destination, raw_directory, downloader_settings, ffprobe, encoding, target_height, overwrite,
         ))
     if not tasks:
         return []
@@ -418,6 +423,7 @@ def download_videos(request: BatchDownloadRequest) -> None:
         youtube_attestation_mode=configured_text(settings, "youtube_attestation_mode"),
         po_token=configured_text(settings, "po_token") or None,
         bgutil_url=configured_text(settings, "bgutil_url") or None,
+        maximum_video_height=request.target_height,
     )
     ffprobe = request.ffprobe if request.ffprobe is not None else configured_text(settings, "ffprobe")
     encoding = ffmpeg_tools.RecapEncoding(
@@ -428,6 +434,8 @@ def download_videos(request: BatchDownloadRequest) -> None:
     )
     if request.jobs < 0:
         raise ValueError("Concurrent downloads cannot be negative")
+    if request.target_height <= 0:
+        raise ValueError("Target video height must be positive")
     try:
         upload_session = prepare.open_upload_session(request.upload, dry_run_mode=request.dry_run)
     except prepare.S3NotConfigured:
@@ -447,7 +455,8 @@ def download_videos(request: BatchDownloadRequest) -> None:
         unavailable = download_one_batch(
             batch_input.videos, output_directory=request.output_directory, raw_directory=request.temporary_directory,
             downloader_settings=downloader_settings, ffprobe=ffprobe,
-            encoding=encoding, jobs=request.jobs, s3_config=s3_config, s3_client=s3_client, song_api_token=song_token or None,
+            encoding=encoding, jobs=request.jobs, target_height=request.target_height,
+            s3_config=s3_config, s3_client=s3_client, song_api_token=song_token or None,
             overwrite=request.overwrite, dry_run=request.dry_run,
         )
     else:
@@ -455,7 +464,8 @@ def download_videos(request: BatchDownloadRequest) -> None:
             unavailable = download_one_batch(
                 batch_input.videos, output_directory=request.output_directory, raw_directory=Path(temporary_path),
                 downloader_settings=downloader_settings, ffprobe=ffprobe,
-                encoding=encoding, jobs=request.jobs, s3_config=s3_config, s3_client=s3_client, song_api_token=song_token or None,
+                encoding=encoding, jobs=request.jobs, target_height=request.target_height,
+                s3_config=s3_config, s3_client=s3_client, song_api_token=song_token or None,
                 overwrite=request.overwrite, dry_run=request.dry_run,
             )
     print_report(unavailable, batch_input.missing_media_links)
@@ -474,6 +484,7 @@ def setup_args() -> argparse.ArgumentParser:
     downloader.add_argument("--ffmpeg", help="ffmpeg executable (defaults to saved setting)")
     downloader.add_argument("--ffprobe", help="ffprobe executable (defaults to saved setting)")
     downloader.add_argument("--jobs", type=int, default=0, help="Concurrent downloads (0 selects automatically)")
+    downloader.add_argument("--target-height", type=int, default=480, help="Maximum downloaded video height in pixels")
     downloader.add_argument("--upload", action=argparse.BooleanOptionalAction, default=prepare.s3_configured(), help="Upload completed files to configured S3")
     downloader.add_argument("--update-song-links", action=argparse.BooleanOptionalAction, default=bool(settings["song_api_token"]) and prepare.s3_configured(), help="Update uploaded media links through the World Stage song API")
     downloader.add_argument("--overwrite", "-y", action="store_true")
@@ -494,6 +505,7 @@ def main() -> None:
             ffmpeg=cast(str | None, args.ffmpeg),
             ffprobe=cast(str | None, args.ffprobe),
             jobs=cast(int, args.jobs),
+            target_height=cast(int, args.target_height),
             upload=cast(bool, args.upload),
             update_song_links=cast(bool, args.update_song_links),
             overwrite=cast(bool, args.overwrite),

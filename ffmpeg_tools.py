@@ -106,6 +106,19 @@ class FFmpeg:
         return MediaProbe(has_audio=has_audio, has_picture=has_picture, has_video=has_video)
 
     def video_properties(self, path: Path) -> VideoProperties:
+        stream = self._video_stream(path)
+        width = int(stream["width"])
+        height = int(stream["height"])
+        sar_width, sar_height = map(int, stream["sample_aspect_ratio"].split(":"))
+        if sar_width <= 0 or sar_height <= 0:
+            raise ValueError(f"Invalid sample aspect ratio for {path}: {stream['sample_aspect_ratio']!r}")
+        return VideoProperties((width * sar_width) / (height * sar_height), height)
+
+    def video_height(self, path: Path) -> int:
+        """Return the coded height of the primary video stream."""
+        return int(self._video_stream(path)["height"])
+
+    def _video_stream(self, path: Path) -> dict[str, Any]:
         result = self.run([
             self.probe_executable, "-v", "error", "-select_streams", "v:0",
             "-show_entries", "stream=width,height,sample_aspect_ratio", "-of", "json", str(path),
@@ -114,12 +127,9 @@ class FFmpeg:
         if not streams:
             raise RuntimeError(f"No video stream found while detecting aspect ratio: {path}")
         stream = streams[0]
-        width = int(stream["width"])
-        height = int(stream["height"])
-        sar_width, sar_height = map(int, stream["sample_aspect_ratio"].split(":"))
-        if sar_width <= 0 or sar_height <= 0:
-            raise ValueError(f"Invalid sample aspect ratio for {path}: {stream['sample_aspect_ratio']!r}")
-        return VideoProperties((width * sar_width) / (height * sar_height), height)
+        if not isinstance(stream, dict):
+            raise RuntimeError(f"Invalid video stream metadata for {path}")
+        return stream
 
     def stream_codecs(self, path: Path) -> StreamCodecs:
         """Return the primary video and audio codec names from a media file."""
@@ -210,15 +220,21 @@ class FFmpeg:
         tags: MediaTags,
         encoding: RecapEncoding,
         preserve_flac: bool,
+        maximum_height: int | None = None,
     ) -> StreamCodecs:
-        """Tag a source video, encoding only streams outside the batch policy."""
+        """Tag a source video, downscaling only when a batch limit requires it."""
+        if maximum_height is not None and maximum_height <= 0:
+            raise ValueError("Maximum video height must be positive")
         codecs = self.stream_codecs(source)
         video_args = ["-c:v", "copy"]
-        if codecs.video != "av1":
+        downscale = maximum_height is not None and self.video_height(source) > maximum_height
+        if codecs.video != "av1" or downscale:
             video_args = [
                 "-c:v", "libsvtav1", "-preset", str(encoding.av1_preset),
                 "-crf", str(encoding.av1_crf), "-pix_fmt", "yuv420p",
             ]
+            if downscale:
+                video_args[0:0] = ["-vf", f"scale=-2:{maximum_height}"]
             if encoding.av1_threads > 0:
                 video_args.extend(["-svtav1-params", f"lp={encoding.av1_threads}"])
 

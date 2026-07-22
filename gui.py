@@ -627,6 +627,7 @@ class BatchDownloadPanel(ApiInputControls, scrolled.ScrolledPanel):
         self.form.directory(root, "Output directory", "output_directory", "output", dialog_title="Choose directory")
         self.form.directory(root, "Temporary directory (optional)", "temporary_directory", dialog_title="Choose directory")
         self.form.text(root, "Concurrent downloads (0=auto)", "jobs", "0")
+        self.form.text(root, "Target video height", "target_height", "576")
 
         self.form.section(root, "Options")
         self.upload_check = self.form.checkbox(root, "Upload to configured S3", "upload", True)

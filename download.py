@@ -66,6 +66,7 @@ class DownloadSettings:
     youtube_attestation_mode: str = "none"
     po_token: str | None = None
     bgutil_url: str | None = None
+    maximum_video_height: int | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,37 @@ def youtube_options(settings: DownloadSettings) -> dict[str, object]:
     if settings.ffmpeg != "ffmpeg":
         options["ffmpeg_location"] = settings.ffmpeg
     return options
+
+
+def youtube_video_format_selector(settings: DownloadSettings) -> str:
+    """Prefer the best video at or below the requested height limit.
+
+    If YouTube has no source at or below the limit, its ``worstvideo`` selector
+    chooses the lowest source above it.  FFmpeg subsequently downscales that
+    fallback to the requested height.
+    """
+    limit = settings.maximum_video_height
+    if limit is None:
+        if settings.prefer_av1_opus:
+            return (
+                "bv*[vcodec^=av01]+ba[acodec^=opus]/"
+                "bv*[vcodec^=av01]+ba/"
+                "bv*+ba[acodec^=opus]/bv*+ba/b"
+            )
+        return "bv*+ba/b"
+    if limit <= 0:
+        raise ValueError("Maximum video height must be positive")
+    at_or_below = f"[height<={limit}]"
+    above = f"[height>{limit}]"
+    preferred = (
+        f"bv*[vcodec^=av01]{at_or_below}+ba[acodec^=opus]/"
+        f"bv*[vcodec^=av01]{at_or_below}+ba/"
+        f"bv*{at_or_below}+ba[acodec^=opus]/"
+    ) if settings.prefer_av1_opus else ""
+    return (
+        f"{preferred}bv*{at_or_below}+ba/b{at_or_below}/"
+        f"worstvideo{above}+bestaudio/worst{above}/bv*+ba/b"
+    )
 
 
 def youtube_topic_upload(url: str, settings: DownloadSettings) -> YouTubeTopicUpload | None:
@@ -331,14 +363,8 @@ def fetch_external(
     if is_youtube_url(url):
         if media_type == "a":
             format_selector = "ba[acodec^=opus]/ba" if settings.prefer_av1_opus else "ba[ext=m4a]/ba"
-        elif settings.prefer_av1_opus:
-            format_selector = (
-                "bv*[vcodec^=av01]+ba[acodec^=opus]/"
-                "bv*[vcodec^=av01]+ba/"
-                "bv*+ba[acodec^=opus]/bv*+ba/b"
-            )
         else:
-            format_selector = "bv*+ba/b"
+            format_selector = youtube_video_format_selector(settings)
         output_template = str(destination.with_suffix("")) + ".%(ext)s"
         options = youtube_options(settings)
         options.update({

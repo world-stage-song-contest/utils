@@ -63,12 +63,14 @@ def file_identity(path: Path) -> tuple[str, int, int]:
 
 def output_fingerprint(rows: list[Data], args: common.Args, reverse: bool) -> str:
     value = {
+        # Version 4 uses accurate seeking for audio-only entries, avoiding
+        # unreliable input seeking in MP3-in-MP4 files with attached artwork.
         # Version 3 corrects non-square-pixel video sources by preserving
         # their display aspect ratio while converting them to square pixels.
         # Version 2 fixes audio artwork: attached pictures are now opened as
         # an unseeked visual input, rather than being discarded by the audio
         # snippet seek that starts after their timestamp-zero frame.
-        "version": 3,
+        "version": 4,
         "reverse": reverse,
         "size": args.size,
         "fps": args.fps,
@@ -177,11 +179,22 @@ def build_graph(
         duration_text = f"{duration:.6f}"
         fade_start = f"{duration - args.fade_duration:.6f}"
 
-        # Seek each occurrence independently.  That preserves fast seeking for
-        # short snippets, even when the same source appears more than once.
-        input_args.extend([
-            "-ss", ffmpeg_tools.timestamp(start), "-t", ffmpeg_tools.timestamp(duration), "-i", str(row.path),
-        ])
+        # MP3-in-MP4 audio files with attached artwork are not reliably
+        # input-seekable on every FFmpeg build. Decode audio-only entries from
+        # the beginning and select their exact interval in the filter graph.
+        # Video entries retain fast per-occurrence input seeking.
+        if row.media_type == "a":
+            input_args.extend(["-i", str(row.path)])
+            audio_trim = (
+                f"atrim=start={start:.6f}:duration={duration_text},"
+                "asetpts=PTS-STARTPTS"
+            )
+        else:
+            input_args.extend([
+                "-ss", ffmpeg_tools.timestamp(start), "-t", ffmpeg_tools.timestamp(duration),
+                "-i", str(row.path),
+            ])
+            audio_trim = f"atrim=duration={duration_text},asetpts=PTS-STARTPTS"
 
         if row.media_type == "a" and row.cover_path is not None and row.cover_path.exists():
             visual_input_index = input_count
@@ -191,11 +204,8 @@ def build_graph(
             ])
             visual_input = f"[{visual_input_index}:v:0]trim=duration={duration_text},setpts=PTS-STARTPTS"
         elif row.media_type == "a":
-            visual_input_index = input_count
-            input_count += 1
-            input_args.extend(["-i", str(row.path)])
             visual_input = (
-                f"[{visual_input_index}:v:0]loop=loop=-1:size=1:start=0,"
+                f"[{media_input}:v:0]loop=loop=-1:size=1:start=0,"
                 f"trim=duration={duration_text},setpts=PTS-STARTPTS"
             )
         else:
@@ -217,8 +227,11 @@ def build_graph(
             f"fade=t=in:st=0:d={args.fade_duration:.6f},"
             f"fade=t=out:st={fade_start}:d={args.fade_duration:.6f},"
             f"fps=fps={args.fps},format=yuv420p[v{entry_number}]",
-            f"[{media_input}:a:0]atrim=duration={duration_text},asetpts=PTS-STARTPTS"
-            f"{media.loudnorm_filter(row.path, start, duration, args.audio_normalization)},"
+            f"[{media_input}:a:0]{audio_trim}"
+            f"{media.loudnorm_filter(
+                row.path, start, duration, args.audio_normalization,
+                accurate_seek=row.media_type == "a",
+            )},"
             f"afade=t=in:st=0:d={args.fade_duration:.6f},"
             f"afade=t=out:st={fade_start}:d={args.fade_duration:.6f}[a{entry_number}]",
         ])

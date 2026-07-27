@@ -158,7 +158,10 @@ class FFmpeg:
         ], capture=True)
         return math.ceil(float(_text(result.stdout).strip()))
 
-    def loudnorm_filter(self, path: Path, start: float, duration: float, mode: str) -> str:
+    def loudnorm_filter(
+        self, path: Path, start: float, duration: float, mode: str, *,
+        accurate_seek: bool = False,
+    ) -> str:
         if mode == "none":
             return ""
         base = "loudnorm=I=-14:TP=-1.5:LRA=11"
@@ -167,11 +170,26 @@ class FFmpeg:
         if mode != "two-pass":
             raise ValueError(f"Unknown audio normalization mode: {mode}")
 
-        result = self.run([
-            self.executable, "-hide_banner", "-loglevel", "info", "-ss", timestamp(start),
-            "-t", timestamp(duration), "-i", str(path), "-map", "0:a:0",
-            "-af", f"{base}:print_format=json", "-f", "null", "-",
+        command = [self.executable, "-hide_banner", "-loglevel", "info"]
+        if accurate_seek:
+            # Some MP3-in-MP4 audio files cannot be input-seeked reliably,
+            # particularly when they also contain attached artwork. Decode up
+            # to the requested interval so loudnorm sees the intended samples.
+            measurement_filter = (
+                f"atrim=start={start:.6f}:duration={duration:.6f},"
+                f"asetpts=PTS-STARTPTS,{base}:print_format=json"
+            )
+            command.extend(["-i", str(path)])
+        else:
+            measurement_filter = f"{base}:print_format=json"
+            command.extend([
+                "-ss", timestamp(start), "-t", timestamp(duration), "-i", str(path),
+            ])
+        command.extend([
+            "-map", "0:a:0", "-af", measurement_filter,
+            "-f", "null", "-",
         ])
+        result = self.run(command)
         matches = re.findall(r"\{\s*\"input_i\".*?\}", _text(result.stderr), flags=re.DOTALL)
         if not matches:
             raise RuntimeError(f"Could not measure loudness for {path}")

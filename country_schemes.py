@@ -71,6 +71,7 @@ schemes = {
     "GL": CS(name="Greenland", bg="white", fg1="red", fg2="white", text="red"),
     "GN": CS(name="Guinea", bg="yellow", fg1="red", fg2="green", text="green"),
     "HT": CS(name="Haiti", bg="red", fg1="blue", fg2="blue", text="white"),
+    "HN": CS(name="Honduras", bg="cyan", fg1="white", fg2="white", text="white"),
     "HK": CS(name="Hong Kong", bg="red", fg1="white", fg2="white", text="white"),
     "HU": CS(name="Hungary", bg="red", fg1="green", fg2="green", text="white"),
     "IS": CS(name="Iceland", bg="blue", fg1="red", fg2="white", text="white"),

@@ -15,6 +15,7 @@ import country_schemes
 import ffmpeg_tools
 
 RECAP_MEDIA_TYPES = {"v", "a"}
+DIRECT_RECAP_DURATION = 10.0
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,26 @@ def parse_seconds(value: str | None) -> float | None:
     if len(parts) == 3:
         return parts[0] * 3600 + parts[1] * 60 + parts[2]
     raise ValueError(f"Invalid timestamp: {value!r}")
+
+
+def direct_recap_range(
+    row: dict[str, str], regular_start: float, show: str, ro: str, country: str,
+) -> tuple[float, float]:
+    """Resolve the optional second snippet used by the 10-second recap."""
+    parsed_start = parse_seconds(row.get("snippet2_start"))
+    parsed_end = parse_seconds(row.get("snippet2_end"))
+    start = regular_start if parsed_start is None else parsed_start
+    end = start + DIRECT_RECAP_DURATION if parsed_end is None else parsed_end
+    duration = end - start
+    if duration <= 0:
+        raise ValueError(
+            f"snippet2_end must be after snippet2_start for {show} #{ro} {country}"
+        )
+    if duration > DIRECT_RECAP_DURATION:
+        raise ValueError(
+            f"Second recap snippet cannot exceed 10 seconds for {show} #{ro} {country}"
+        )
+    return start, end
 
 
 def split_key(key: str) -> tuple[str, str]:
@@ -340,13 +361,10 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
             ) if row.get("image_link", "") else None,
         )
         reverse[show].append(value)
-        direct_start = parse_seconds(row.get("snippet2_start"))
-        direct_end = parse_seconds(row.get("snippet2_end"))
-        actual_direct_start = first_start if direct_start is None else direct_start
-        direct[show].append(value.make_straight(
-            actual_direct_start,
-            actual_direct_start + 10 if direct_end is None else direct_end,
-        ))
+        direct_start, direct_end = direct_recap_range(
+            row, first_start, show, ro, country,
+        )
+        direct[show].append(value.make_straight(direct_start, direct_end))
 
     args.output.mkdir(parents=True, exist_ok=True)
     scratch = args.tmpdir / "metadata"

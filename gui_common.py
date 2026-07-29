@@ -26,7 +26,10 @@ SHOW_FIELDS = (
     ("snippet2_start", "Direct start"), ("snippet2_end", "Direct end"),
     ("language", "Language"),
 )
-SHOW_TABLE_COLUMNS = ("ro", "cc", "country", "artist", "title", "type", "snippet_start", "snippet_end")
+SHOW_TABLE_COLUMNS = (
+    "ro", "cc", "country", "artist", "title", "type",
+    "snippet_start", "snippet_end", "snippet2_start", "snippet2_end",
+)
 SHOW_REQUIRED_FIELDS = ("show", "ro", "cc", "country", "artist", "title", "media_link", "type")
 RECAP_MODES = (
     ("both", "Both recaps"),

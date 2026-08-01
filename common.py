@@ -74,6 +74,8 @@ def run(cmd: list[str] | str, *, capture: bool = True) -> sp.CompletedProcess[st
             stderr=sp.PIPE if capture else None,
             text=True,
             check=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except sp.CalledProcessError as e:
         message = f"\n[cmd] {' '.join(map(shlex.quote, cmd))}\n[stderr]\n{e.stderr or ''}"

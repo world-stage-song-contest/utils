@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Iterable
 import hashlib
 import json
+import math
 import multiprocessing as mp
 import time
 from urllib.parse import urlparse
@@ -154,6 +155,38 @@ def validate_media(row: Data, probe: ffmpeg_tools.MediaProbe) -> None:
         row.cover_path is not None and row.cover_path.exists()
     ):
         raise RuntimeError(f"Audio entry needs attached artwork or an image_link cover: {row.path}")
+
+
+def validate_snippets(
+    groups: Iterable[tuple[str, list[Data]]], fade_duration: float,
+    media: ffmpeg_tools.FFmpeg,
+) -> None:
+    """Check every selected interval before any normalization or render starts."""
+    durations: dict[Path, float] = {}
+    for direction, rows in groups:
+        for row in rows:
+            if row.path not in durations:
+                durations[row.path] = media.duration_seconds(row.path)
+            duration = durations[row.path]
+            start, end = row.snippet_start, row.snippet_end
+            context = f"{direction} recap for {row.show} #{row.ro} {row.country} ({row.path})"
+            if not all(math.isfinite(value) for value in (start, end)):
+                raise ValueError(f"Invalid snippet for {context}: timestamps must be finite")
+            requested = f"{ffmpeg_tools.timestamp(start)}–{ffmpeg_tools.timestamp(end)}"
+            if start < 0 or end <= start:
+                raise ValueError(
+                    f"Invalid snippet {requested} for {context}: "
+                    "start must be nonnegative and end must be after start"
+                )
+            render_start, render_end = clip_range(row, fade_duration)
+            if render_end > duration:
+                raise ValueError(
+                    f"Snippet outside source duration for {context}: requested {requested}; "
+                    f"including fades {ffmpeg_tools.timestamp(render_start)}–"
+                    f"{ffmpeg_tools.timestamp(render_end)}; source duration "
+                    f"{ffmpeg_tools.timestamp(duration)}. "
+                    "Choose a snippet within the source duration, including fades."
+                )
 
 
 def video_normalizer(width: int, height: int) -> str:
@@ -365,6 +398,16 @@ def main(all_clips: common.Clips, args: common.Args) -> dict[str, list[Path]]:
             row, first_start, show, ro, country,
         )
         direct[show].append(value.make_straight(direct_start, direct_end))
+
+    selected_groups = []
+    if not args.only_reverse:
+        selected_groups.extend(("Direct", rows) for rows in direct.values())
+    if not args.only_straight:
+        selected_groups.extend(("Reverse", rows) for rows in reverse.values())
+    validate_snippets(
+        selected_groups, args.fade_duration,
+        ffmpeg_tools.FFmpeg(args.ffmpeg, args.ffprobe, common.run),
+    )
 
     args.output.mkdir(parents=True, exist_ok=True)
     scratch = args.tmpdir / "metadata"

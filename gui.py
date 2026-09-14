@@ -310,11 +310,38 @@ class ConfigPanel(ApiInputControls, scrolled.ScrolledPanel):
 
         self.SetSizer(root)
         self.SetupScrolling(scroll_x=False, scroll_y=True, scrollToTop=False)
+        self.restore_configuration()
         self.update_input_source()
+
+    def restore_configuration(self) -> None:
+        settings = app_config.configuration_settings(self.form.values_as_dict())
+        for name, control in self.values.items():
+            value = settings[name]
+            if isinstance(control, (wx.Choice, wx.RadioBox)):
+                # Unknown/removed choices leave the existing default selected.
+                control.SetStringSelection(str(value))
+                event_type = wx.EVT_CHOICE if isinstance(control, wx.Choice) else wx.EVT_RADIOBOX
+            elif isinstance(control, wx.CheckBox):
+                control.SetValue(bool(value))
+                event_type = wx.EVT_CHECKBOX
+            else:
+                cast(wx.TextCtrl, control).ChangeValue(str(value))
+                event_type = wx.EVT_TEXT
+            control.Bind(event_type, self.save_configuration)
+
+    def save_configuration(self, event) -> None:
+        try:
+            app_config.update_configuration_settings(self.form.values_as_dict())
+        except (OSError, RuntimeError) as exc:
+            self.status.SetLabel(f"Could not save configuration: {exc}")
+        event.Skip()
 
     def refresh_upload_availability(self) -> None:
         control = cast(wx.CheckBox, self.values["upload_recaps"])
-        self.form.refresh_s3_upload(control, "Configure S3 in Settings to enable recap uploads.")
+        # Availability must not overwrite the user's saved upload preference.
+        available = prepare.s3_configured()
+        control.Enable(available)
+        control.SetToolTip("" if available else "Configure S3 in Settings to enable recap uploads.")
 
     def text(self, name: str) -> str:
         return cast(wx.TextCtrl, self.values[name]).GetValue().strip()
@@ -345,7 +372,7 @@ class ConfigPanel(ApiInputControls, scrolled.ScrolledPanel):
         values["fps"] = self.text("fps")
         values["jobs"] = self.text("jobs")
         values["recap_mode"] = gui_common.recap_mode_from_label(self.choice("recap_mode"))
-        values["upload_recaps"] = self.checked("upload_recaps")
+        values["upload_recaps"] = self.checked("upload_recaps") and self.values["upload_recaps"].IsEnabled()
         return values
 
     def run(self, _event) -> None:

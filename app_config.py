@@ -122,6 +122,26 @@ def update_recap_settings(values: Mapping[str, object]) -> Path:
     return _write_config(data)
 
 
+def configuration_settings(defaults: Mapping[str, object]) -> dict[str, object]:
+    """Restore Configuration form values, retaining defaults for invalid types."""
+    values = dict(defaults)
+    stored = _read_config().get("configuration", {})
+    if isinstance(stored, dict):
+        for key, default in defaults.items():
+            if key in stored and type(stored[key]) is type(default):
+                values[key] = stored[key]
+    return values
+
+
+def update_configuration_settings(values: Mapping[str, object]) -> Path:
+    """Save the Configuration form independently of shared application settings."""
+    data = _read_config()
+    data["configuration"] = {
+        key: value for key, value in values.items() if isinstance(value, (str, bool))
+    }
+    return _write_config(data)
+
+
 def s3_settings() -> dict[str, str] | None:
     """Return persisted S3 settings, migrating the former prepare-only file."""
     data = _read_config()

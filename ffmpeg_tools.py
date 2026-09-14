@@ -89,7 +89,7 @@ class FFmpeg:
         result = self.run([
             self.probe_executable, "-v", "error", "-show_entries",
             "stream=codec_type:stream_disposition=attached_pic", "-of", "json", str(path),
-        ])
+        ], capture=True)
         streams = json.loads(_text(result.stdout)).get("streams", [])
 
         has_audio = any(stream.get("codec_type") == "audio" for stream in streams)
@@ -122,7 +122,7 @@ class FFmpeg:
         result = self.run([
             self.probe_executable, "-v", "error", "-select_streams", "v:0",
             "-show_entries", "stream=width,height,sample_aspect_ratio", "-of", "json", str(path),
-        ])
+        ], capture=True)
         streams = json.loads(_text(result.stdout)).get("streams", [])
         if not streams:
             raise RuntimeError(f"No video stream found while detecting aspect ratio: {path}")
@@ -152,11 +152,21 @@ class FFmpeg:
         return self.video_properties(path).display_aspect
 
     def duration(self, path: Path) -> int:
+        return math.ceil(self.duration_seconds(path))
+
+    def duration_seconds(self, path: Path) -> float:
+        """Return the source duration without rounding away snippet overflows."""
         result = self.run([
             self.probe_executable, "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", str(path),
         ], capture=True)
-        return math.ceil(float(_text(result.stdout).strip()))
+        try:
+            duration = float(_text(result.stdout).strip())
+        except ValueError as exc:
+            raise RuntimeError(f"Could not determine source duration: {path}") from exc
+        if not math.isfinite(duration) or duration <= 0:
+            raise RuntimeError(f"Invalid source duration for {path}: {duration}")
+        return duration
 
     def loudnorm_filter(
         self, path: Path, start: float, duration: float, mode: str, *,
@@ -194,13 +204,30 @@ class FFmpeg:
         if not matches:
             raise RuntimeError(f"Could not measure loudness for {path}")
         measured = json.loads(matches[-1])
+        parameters = [
+            ("measured_I", "input_i", -99, 0),
+            ("measured_TP", "input_tp", -99, 99),
+            ("measured_LRA", "input_lra", 0, 99),
+            ("measured_thresh", "input_thresh", -99, 0),
+            ("offset", "target_offset", -99, 99),
+        ]
+        for target, source, minimum, maximum in parameters:
+            try:
+                value = float(measured[source])
+            except (KeyError, TypeError, ValueError):
+                value = math.nan
+            if not math.isfinite(value) or not minimum <= value <= maximum:
+                raise RuntimeError(
+                    f"Cannot normalize audio for {path} "
+                    f"from {timestamp(start)} to {timestamp(start + duration)}: "
+                    f"invalid loudness measurement {source}={measured.get(source)!r} "
+                    f"for {target}. Check that the snippet is within the source's "
+                    "duration and contains audible audio. For intentional silence, "
+                    "use one-pass normalization or disable normalization."
+                )
         values = ":".join(
             f"{target}={measured[source]}"
-            for target, source in [
-                ("measured_I", "input_i"), ("measured_TP", "input_tp"),
-                ("measured_LRA", "input_lra"), ("measured_thresh", "input_thresh"),
-                ("offset", "target_offset"),
-            ]
+            for target, source, _, _ in parameters
         )
         return f",{base}:{values}:linear=true:print_format=summary"
 
@@ -284,7 +311,7 @@ class FFmpeg:
         thread_args = ["-svtav1-params", f"lp={encoding.av1_threads}"] if encoding.av1_threads > 0 else []
         self.run([
             self.executable, "-hide_banner", "-y", "-loglevel", "error", *inputs,
-            "-f", "ffmetadata", "-i", str(metadata), "-filter_complex_script", str(graph),
+            "-f", "ffmetadata", "-i", str(metadata), "-/filter_complex", str(graph),
             "-map", "[vout]", "-map", "[aout]", "-map_metadata", str(metadata_input),
             "-metadata", f"title={title}", "-c:v", "libsvtav1",
             "-preset", str(encoding.av1_preset), "-crf", str(encoding.av1_crf), *thread_args,

@@ -163,6 +163,13 @@ def youtube_video_format_selector(settings: DownloadSettings) -> str:
     )
 
 
+def youtube_audio_format_selector(settings: DownloadSettings) -> str:
+    """Prefer audio-only sources, falling back to audio from a muxed MP4."""
+    if settings.prefer_av1_opus:
+        return "ba[acodec^=opus]/ba/b[ext=mp4]/b"
+    return "ba[ext=m4a]/ba/b[ext=mp4]/b"
+
+
 def youtube_topic_upload(url: str, settings: DownloadSettings) -> YouTubeTopicUpload | None:
     """Return Topic-upload artwork metadata, or ``None`` for a normal video.
 
@@ -321,13 +328,30 @@ def download_direct(url: str, destination: Path) -> None:
     headers = dict(HTTP_HEADERS)
     if offset:
         headers["Range"] = f"bytes={offset}-"
-    request = Request(url, headers=headers)
-    try:
+
+    def transfer(request: Request, resume_offset: int) -> None:
         with urlopen(request, timeout=60) as response:
             status = response.getcode()
-            mode = "ab" if offset and status == 206 else "wb"
+            mode = "ab" if resume_offset and status == 206 else "wb"
             with destination.open(mode) as output:
                 shutil.copyfileobj(response, output, length=1024 * 1024)
+
+    try:
+        transfer(Request(url, headers=headers), offset)
+    except HTTPError as exc:
+        if exc.code == 416 and offset:
+            content_range = exc.headers.get("Content-Range", "")
+            match = re.fullmatch(r"bytes \*/(\d+)", content_range.strip(), re.IGNORECASE)
+            if match is not None and int(match.group(1)) == offset:
+                return
+            try:
+                transfer(Request(url, headers=HTTP_HEADERS), 0)
+                return
+            except (HTTPError, URLError) as retry_exc:
+                exc = retry_exc
+        message = f"Could not download {url}: {exc}"
+        print(message, file=common.ERR_HANDLE)
+        raise RuntimeError(message) from exc
     except (HTTPError, URLError) as exc:
         message = f"Could not download {url}: {exc}"
         print(message, file=common.ERR_HANDLE)
@@ -362,7 +386,7 @@ def fetch_external(
     """Download one external media file to an exact destination path."""
     if is_youtube_url(url):
         if media_type == "a":
-            format_selector = "ba[acodec^=opus]/ba" if settings.prefer_av1_opus else "ba[ext=m4a]/ba"
+            format_selector = youtube_audio_format_selector(settings)
         else:
             format_selector = youtube_video_format_selector(settings)
         output_template = str(destination.with_suffix("")) + ".%(ext)s"

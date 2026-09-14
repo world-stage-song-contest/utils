@@ -33,10 +33,13 @@ class BatchVideo:
     title: str
     language: str
     media_link: str
+    entry_code: str | None = None
+    song_id: int | None = None
 
     @property
     def name(self) -> str:
-        return f"ws{self.year}{self.cc}"
+        suffix = f"-{self.entry_code}" if self.entry_code is not None else ""
+        return f"ws{self.year}{self.cc}{suffix}"
 
 
 @dataclass(frozen=True)
@@ -126,6 +129,13 @@ def video_rows(path: Path) -> BatchInput:
         language = row.get("language", "").strip().lower()
         if not language:
             raise ValueError(f"row {index} ({year}/{cc}): language must not be empty")
+        song_id_text = row.get("song_id", "").strip()
+        try:
+            song_id = int(song_id_text) if song_id_text else None
+        except ValueError as exc:
+            raise ValueError(f"row {index} ({year}/{cc}): song_id must be an integer") from exc
+        if song_id is not None and song_id <= 0:
+            raise ValueError(f"row {index} ({year}/{cc}): song_id must be positive")
         videos.append(BatchVideo(
             year=year,
             cc=cc,
@@ -135,6 +145,8 @@ def video_rows(path: Path) -> BatchInput:
             title=row.get("title", "").strip(),
             language=language,
             media_link=media_link,
+            entry_code=row.get("entry_code", "").strip() or None,
+            song_id=song_id,
         ))
 
     names = [video.name for video in videos]
@@ -167,6 +179,19 @@ def _worker_run(cmd: list[str], capture: bool = False) -> sp.CompletedProcess[by
 
 def _worker_media(task: BatchTask) -> ffmpeg_tools.FFmpeg:
     return ffmpeg_tools.FFmpeg(task.downloader_settings.ffmpeg, task.ffprobe, _worker_run)
+
+
+def _existing_media_is_valid(task: BatchTask, path: Path) -> bool:
+    """Reject interrupted outputs before treating them as completed work."""
+    try:
+        return _worker_media(task).duration(path) > 0
+    except (RuntimeError, ValueError):
+        print(f"[batch] Existing output is invalid and will be replaced: {path}")
+        return False
+
+
+def _partial_output(destination: Path) -> Path:
+    return destination.with_name(f".{destination.name}.partial")
 
 
 def _media_tags(video: BatchVideo) -> ffmpeg_tools.MediaTags:
@@ -204,7 +229,11 @@ def process_task(task: BatchTask) -> BatchResult:
     if topic_upload is not None:
         destination = destination.with_suffix(".m4a")
         cover = destination.with_suffix(topic_upload.thumbnail_suffix)
-        if destination.exists() and not task.overwrite:
+        if (
+            destination.exists()
+            and not task.overwrite
+            and _existing_media_is_valid(task, destination)
+        ):
             if cover.exists():
                 return BatchResult(task.video, destination, "existing", "Topic audio already exists", cover)
             download.download_direct(topic_upload.thumbnail_url, cover)
@@ -218,11 +247,20 @@ def process_task(task: BatchTask) -> BatchResult:
         ):
             return result
 
-        _worker_media(task).make_audio(cover, raw_path, destination, _media_tags(task.video))
+        partial_output = _partial_output(destination)
+        try:
+            _worker_media(task).make_audio(cover, raw_path, partial_output, _media_tags(task.video))
+            partial_output.replace(destination)
+        finally:
+            partial_output.unlink(missing_ok=True)
         raw_path.unlink()
         return BatchResult(task.video, destination, "complete", "YouTube Topic audio", cover)
 
-    if destination.exists() and not task.overwrite:
+    if (
+        destination.exists()
+        and not task.overwrite
+        and _existing_media_is_valid(task, destination)
+    ):
         return BatchResult(task.video, destination, "existing", "already exists")
 
     raw_path = task.raw_directory / f"{task.video.name}.download.mov"
@@ -231,14 +269,19 @@ def process_task(task: BatchTask) -> BatchResult:
     ):
         return result
 
-    source_codecs = _worker_media(task).make_av1_opus_video(
-        raw_path,
-        destination,
-        _media_tags(task.video),
-        task.encoding,
-        preserve_flac=download.is_google_drive_url(task.video.media_link),
-        maximum_height=task.target_height,
-    )
+    partial_output = _partial_output(destination)
+    try:
+        source_codecs = _worker_media(task).make_av1_opus_video(
+            raw_path,
+            partial_output,
+            _media_tags(task.video),
+            task.encoding,
+            preserve_flac=download.is_google_drive_url(task.video.media_link),
+            maximum_height=task.target_height,
+        )
+        partial_output.replace(destination)
+    finally:
+        partial_output.unlink(missing_ok=True)
     raw_path.unlink()
     return BatchResult(task.video, destination, "complete", f"{source_codecs.video}/{source_codecs.audio}")
 
@@ -285,9 +328,6 @@ def download_one_batch(
     tasks: list[BatchTask] = []
     for video in videos:
         destination = output_directory / f"{video.name}.mov"
-        if destination.exists() and not overwrite and not download.is_youtube_url(video.media_link):
-            print(f"[batch] Skipping existing {destination}")
-            continue
         print(f"[batch] Queued {video.name} from {video.media_link}")
         tasks.append(BatchTask(
             video, destination, raw_directory, downloader_settings, ffprobe, encoding, target_height, overwrite,
@@ -338,12 +378,14 @@ def _update_song_links(result: BatchResult, token: str) -> None:
     """Publish the exact CDN URLs only after the corresponding uploads succeed."""
     song_api.update_song_links(
         token,
+        song_id=result.video.song_id,
         year=result.video.year,
         country=result.video.cc,
         video_link=song_api.media_url(result.destination.name),
         poster_link=song_api.media_url(result.artwork.name) if result.artwork is not None else None,
+        entry_code=result.video.entry_code,
     )
-    print(f"[batch] Updated World Stage media links for {result.video.country} {result.video.year}")
+    print(f"[batch] Updated World Stage media links for {result.video.name}")
 
 
 def _log_result(
@@ -365,6 +407,9 @@ def _log_result(
             metadata = _make_metadata(result, ffmpeg, ffprobe, overwrite=False)
             print(f"[batch] Created missing metadata {metadata}")
             _upload_artifacts(s3_config, s3_client, metadata)
+        if song_api_token is not None:
+            _upload_artifacts(s3_config, s3_client, result.destination, result.artwork, metadata)
+            _update_song_links(result, song_api_token)
         return
     print(f"[batch] Tagged {result.destination.name} ({result.detail})")
     metadata = _make_metadata(result, ffmpeg, ffprobe, overwrite=True)

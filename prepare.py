@@ -111,14 +111,20 @@ class SongData:
         if (p := self.image_path()) is not None and not p.exists():
             raise FileNotFoundError(self.image_path())
 
-        # must look like wsYYYYcc.*
-        pattern = re.compile(r"^ws(?P<year>\d{4})(?P<cc>[a-z]{2})\.[^.]+$")
+        # must look like wsYYYYcc.* or wsYYYYcc-<entry code>.*
+        pattern = re.compile(
+            r"^ws(?P<year>\d{4})(?P<cc>[a-z]{2})"
+            r"(?:-(?P<entry_code>[a-z0-9][a-z0-9-]*))?\.[^.]+$",
+        )
         name = self.audio_path.name.lower()
         m = pattern.match(name)
         if not m:
-            raise ValueError(f"invalid filename {self.audio_path.name!r}, expected wsYYYYcc")
+            raise ValueError(
+                f"invalid filename {self.audio_path.name!r}, expected wsYYYYcc or wsYYYYcc-code",
+            )
         self._year = m.group("year")
         self._cc = m.group("cc")
+        self._entry_code = m.group("entry_code")
 
     def output_path(self) -> Path:
         ext = '.mov' if self.image_type is None else '.m4a'
@@ -162,6 +168,9 @@ class SongData:
 
     def year_cc(self) -> tuple[str, str]:
         return self._year, self._cc
+
+    def entry_code(self) -> str | None:
+        return self._entry_code
 
     def formatted_artist(self) -> str:
         return formatted_artist(self.artist)
@@ -431,6 +440,8 @@ def upload(path: Path | None, config: S3Config, client, object_name: str | None 
         extra_args['ContentType'] = 'image/png'
     elif suffix == '.webp':
         extra_args['ContentType'] = 'image/webp'
+    elif suffix == '.json':
+        extra_args['ContentType'] = 'application/json'
 
     print(f"Uploading {path} to s3://{config.bucket}/{object_name}", file=OUT_HANDLE)
     if dry_run.get():

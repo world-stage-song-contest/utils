@@ -3,20 +3,22 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import multiprocessing as mp
+from collections.abc import Callable, MutableMapping
+from pathlib import Path
 from queue import Empty
-from typing import Callable, MutableMapping, cast
+from typing import cast
 
 import wx
 import wx.lib.scrolledpanel as scrolled
+from wx import grid
 
+import app_config
 import common
 import gui_common
+import intervals
 import prepare
-import app_config
 import recap_api
-
 
 EntryControl = wx.TextCtrl | wx.Choice
 
@@ -717,6 +719,128 @@ class BatchDownloadPanel(ApiInputControls, scrolled.ScrolledPanel):
         )
 
 
+class IntervalDownloadPanel(scrolled.ScrolledPanel):
+    """Edit and publish opening and interval acts for one or more shows."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.values: dict[str, wx.Window] = {}
+        self.form = FormBuilder(self, self.values, 190)
+        root = wx.BoxSizer(wx.VERTICAL)
+        self.form.section(root, "Interval downloads")
+        root.Add(wx.StaticText(self, label=(
+            "Enter all intervals for each show; 0 is the opening. Intervals are published in numeric order.\n"
+            "URLs may be Google Drive, YouTube or direct downloads. Existing outputs are replaced."
+        )), 0, wx.ALL, 10)
+        self.table = grid.Grid(self)
+        self.table.CreateGrid(1, len(intervals.FIELDS))
+        for column, (label, width) in enumerate(zip(
+            ("Year", "Show", "Interval number", "Title", "URL"), (70, 85, 115, 250, 350),
+        )):
+            self.table.SetColLabelValue(column, label)
+            self.table.SetColSize(column, width)
+        self.table.SetMinSize(wx.Size(-1, 230))
+        root.Add(self.table, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 10)
+        buttons = wx.BoxSizer(wx.HORIZONTAL)
+        for label, handler in (
+            ("Add row", self.add_row), ("Remove selected rows", self.remove_rows),
+            ("Load JSON / CSV", self.load_table), ("Save table", self.save_table),
+        ):
+            button = wx.Button(self, label=label)
+            button.Bind(wx.EVT_BUTTON, handler)
+            buttons.Add(button, 0, wx.RIGHT, 6)
+        root.Add(buttons, 0, wx.ALL, 10)
+        self.form.directory(root, "Output directory", "output_directory", "output", dialog_title="Choose directory")
+        self.form.text(root, "Target video height", "target_height", "576")
+        self.form.checkbox(root, "Upload to configured S3 and update World Stage show metadata", "upload", True)
+        self.form.checkbox(root, "Dry run (preview only)", "dry_run", False)
+        self.run_button = wx.Button(self, label="Download intervals")
+        self.run_button.Bind(wx.EVT_BUTTON, self.run)
+        root.Add(self.run_button, 0, wx.ALL | wx.ALIGN_CENTER_HORIZONTAL, 10)
+        self.status = wx.StaticText(self, label="Uploads use the S3 settings and World Stage API token in Settings.")
+        root.Add(self.status, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        self.output_box = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
+        self.output_box.SetMinSize(wx.Size(-1, 160))
+        root.Add(self.output_box, 1, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 10)
+        self.process_output = BackgroundProcessOutput(self, self.output_box, self.run_button, self.status, "Interval download")
+        self.SetSizer(root)
+        self.SetupScrolling(scroll_x=False, scroll_y=True, scrollToTop=False)
+
+    def table_rows(self) -> list[dict[str, str]]:
+        self.table.SaveEditControlValue()
+        self.table.DisableCellEditControl()
+        rows = []
+        for row in range(self.table.GetNumberRows()):
+            values = {field: self.table.GetCellValue(row, column).strip()
+                      for column, field in enumerate(intervals.FIELDS)}
+            if any(values.values()):
+                rows.append(values)
+        return rows
+
+    def add_row(self, _event) -> None:
+        self.table.AppendRows(1)
+
+    def remove_rows(self, _event) -> None:
+        selected = set(self.table.GetSelectedRows())
+        for top, bottom in zip(self.table.GetSelectionBlockTopLeft(), self.table.GetSelectionBlockBottomRight()):
+            selected.update(range(top.GetRow(), bottom.GetRow() + 1))
+        if not selected and self.table.GetGridCursorRow() >= 0:
+            selected.add(self.table.GetGridCursorRow())
+        for row in sorted(selected, reverse=True):
+            self.table.DeleteRows(row, 1)
+        if not self.table.GetNumberRows():
+            self.table.AppendRows(1)
+
+    def load_table(self, _event) -> None:
+        with wx.FileDialog(self, "Load intervals", wildcard="Interval tables (*.json;*.csv)|*.json;*.csv",
+                           style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST) as dialog:
+            if dialog.ShowModal() != wx.ID_OK:
+                return
+            try:
+                entries = intervals.load_entries(Path(dialog.GetPath()))
+            except (ValueError, OSError) as exc:
+                self.status.SetLabel(f"Cannot load: {exc}")
+                return
+        self.table.DisableCellEditControl()
+        if self.table.GetNumberRows():
+            self.table.DeleteRows(0, self.table.GetNumberRows())
+        self.table.AppendRows(len(entries))
+        for row, entry in enumerate(entries):
+            for column, field in enumerate(intervals.FIELDS):
+                self.table.SetCellValue(row, column, str(getattr(entry, field)))
+        self.status.SetLabel(f"Loaded {len(entries)} rows.")
+
+    def save_table(self, _event) -> None:
+        try:
+            entries = intervals.parse_rows(self.table_rows())
+            with wx.FileDialog(self, "Save intervals", defaultFile="intervals.json",
+                               wildcard="JSON (*.json)|*.json|CSV (*.csv)|*.csv",
+                               style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT) as dialog:
+                if dialog.ShowModal() != wx.ID_OK:
+                    return
+                path = Path(dialog.GetPath())
+                if path.suffix.lower() not in {".json", ".csv"}:
+                    path = path.with_suffix(".csv" if dialog.GetFilterIndex() == 1 else ".json")
+                intervals.save_entries(path, entries)
+            self.status.SetLabel(f"Saved table to {path}.")
+        except (ValueError, OSError) as exc:
+            self.status.SetLabel(f"Cannot save: {exc}")
+
+    def run(self, _event) -> None:
+        if self.process_output.is_running():
+            return
+        try:
+            request = gui_common.build_interval_download_request(self.table_rows(), self.form.values_as_dict())
+        except (ValueError, OSError) as exc:
+            self.status.SetLabel(f"Cannot start: {exc}")
+            return
+        self.process_output.launch(
+            gui_common.run_gui_process, gui_common.GuiWorkerJob("intervals", request),
+            started_status="Downloading intervals in a background process.",
+            started_message="Started interval-download process.\n",
+        )
+
+
 class SettingsPanel(scrolled.ScrolledPanel):
     """Persisted application defaults shared by the recap maker and prepare.py."""
 
@@ -748,7 +872,7 @@ class SettingsPanel(scrolled.ScrolledPanel):
 
         self.form.section(root, "World Stage API")
         self.form.text(
-            root, "Song API token", "song_api_token", str(settings["song_api_token"]),
+            root, "World Stage API token", "song_api_token", str(settings["song_api_token"]),
             style=wx.TE_PASSWORD,
         )
 
@@ -820,11 +944,13 @@ class RecapFrame(wx.Frame):
         editor = ShowEditorPanel(notebook, self.config_panel.set_input_path)
         self.prepare_panel = PreparePanel(notebook)
         self.batch_download_panel = BatchDownloadPanel(notebook)
+        self.interval_download_panel = IntervalDownloadPanel(notebook)
         settings = SettingsPanel(notebook, self.apply_settings)
         notebook.AddPage(self.config_panel, "Configuration")
         notebook.AddPage(editor, "Show editor")
         notebook.AddPage(self.prepare_panel, "Prepare media")
         notebook.AddPage(self.batch_download_panel, "Batch download")
+        notebook.AddPage(self.interval_download_panel, "Intervals")
         notebook.AddPage(settings, "Settings")
 
     def apply_settings(self, settings: dict[str, str | bool]) -> None:

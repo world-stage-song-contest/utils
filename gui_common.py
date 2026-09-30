@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
+import json
+import traceback
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-import json
-import traceback
 from typing import Literal, cast
 
-import common
-import main
-import prepare
 import app_config
 import batch
-import recap_api
-
+import common
+import intervals
+import main
+import prepare
 
 SHOW_FIELDS = (
     ("show", "Show"), ("ro", "Running order"), ("cc", "Country code"),
@@ -58,8 +57,8 @@ class QueueWriter:
 class GuiWorkerJob:
     """One GUI operation run through the single multiprocessing entry point."""
 
-    kind: Literal["recap", "prepare", "batch"]
-    request: common.Args | prepare.PrepareRequest | batch.BatchDownloadRequest
+    kind: Literal["recap", "prepare", "batch", "intervals"]
+    request: common.Args | prepare.PrepareRequest | batch.BatchDownloadRequest | intervals.IntervalDownloadRequest
 
 
 def _run_gui_process(
@@ -118,7 +117,31 @@ def run_gui_process(job: GuiWorkerJob, output_queue) -> None:
             use_prepare_handles=True, redirect_standard_streams=True,
         )
         return
+    if job.kind == "intervals":
+        if not isinstance(job.request, intervals.IntervalDownloadRequest):
+            raise TypeError("Interval GUI jobs require IntervalDownloadRequest")
+        interval_request = job.request
+        _run_gui_process(
+            output_queue, lambda: intervals.execute(interval_request), use_common_handles=True,
+            use_prepare_handles=True, redirect_standard_streams=True,
+        )
+        return
     raise ValueError(f"Unsupported GUI job kind: {job.kind}")
+
+
+def build_interval_download_request(
+    rows: list[dict[str, str]], values: Mapping[str, object],
+) -> intervals.IntervalDownloadRequest:
+    output = str(values["output_directory"]).strip()
+    if not output:
+        raise ValueError("Choose an output directory")
+    height = int(str(values["target_height"]))
+    if height <= 0:
+        raise ValueError("Target video height must be positive")
+    return intervals.IntervalDownloadRequest(
+        entries=intervals.parse_rows(rows), output_directory=Path(output), target_height=height,
+        upload=bool(values["upload"]), dry_run=bool(values["dry_run"]),
+    )
 
 
 def build_prepare_request(values: Mapping[str, object]) -> prepare.PrepareRequest:

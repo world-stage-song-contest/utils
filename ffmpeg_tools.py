@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Callable
 import json
 import math
 import re
 import subprocess as sp
-
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 CommandRunner = Callable[..., sp.CompletedProcess[Any]]
 

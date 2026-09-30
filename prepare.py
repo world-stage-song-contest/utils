@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # pyright: reportMissingImports=false
 
-import shlex
 import argparse
 import json
 import os
 import re
-import sys
+import shlex
 import subprocess as sp
+import sys
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, IO, Union
+from typing import IO, Any, Union
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -303,6 +303,7 @@ def write_json(
     image_name: str = "",
     subtitles_name: str = "",
     overwrite_existing: bool | None = None,
+    display_title: str | None = None,
 ) -> Path:
     """Write the canonical CDN JSON document for one prepared media file.
 
@@ -331,7 +332,7 @@ def write_json(
         raise ValueError(f"Unknown mode: {mode}")
 
     data = {
-        "title": f"{formatted_artist(artist)} – {title}",
+        "title": display_title if display_title is not None else f"{formatted_artist(artist)} – {title}",
         "duration": duration,
         "sources": [
             {

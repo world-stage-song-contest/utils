@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
-import os
-from pathlib import Path
 import argparse
+import json
+import os
 import shutil
 import sys
 import time
-import json
+from pathlib import Path
 
-import cards
-import download
-import ffmpeg_tools
-import recap
 #import thumbnails
 import app_config
+import cards
 import common
+import download
+import ffmpeg_tools
 import prepare
+import recap
 import recap_api
+
 
 def cleanup(tmp: Path) -> None:
     for root, dirs, files in tmp.walk(top_down=False):

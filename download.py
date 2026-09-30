@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-from collections import defaultdict
-from dataclasses import dataclass
-from pathlib import Path
 import hashlib
 import multiprocessing as mp
 import re
 import shutil
 import sqlite3
 import time
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 from gdown.download import download as gdown_download
@@ -191,7 +191,7 @@ def youtube_topic_upload(url: str, settings: DownloadSettings) -> YouTubeTopicUp
             raise YouTubeUnavailableError(message) from exc
         raise RuntimeError(message) from exc
     if not isinstance(info, dict):
-        raise RuntimeError(f"yt-dlp did not return metadata for {url}")
+        raise TypeError(f"yt-dlp did not return metadata for {url}")
     if not any(
         isinstance(value, str) and value.strip().lower().endswith(" - topic")
         for value in (info.get("channel"), info.get("uploader"))
@@ -308,7 +308,18 @@ def is_world_stage_url(url: str) -> bool:
 
 
 def is_google_drive_url(url: str) -> bool:
-    return _GDRIVE_RE.search(url) is not None
+    return google_drive_id(url) is not None
+
+
+def google_drive_id(url: str) -> str | None:
+    """Recognize Drive file links and the open/uc links containing an id query."""
+    parsed = urlparse(url)
+    if (parsed.hostname or "").lower() not in {"drive.google.com", "docs.google.com"}:
+        return None
+    if match := _GDRIVE_RE.search(parsed.path):
+        return match.group(1)
+    file_id = parse_qs(parsed.query).get("id", [""])[0]
+    return file_id if re.fullmatch(r"[A-Za-z0-9_-]{10,}", file_id) else None
 
 
 def world_stage_etag(url: str) -> str | None:
@@ -352,7 +363,7 @@ def download_direct(url: str, destination: Path) -> None:
         message = f"Could not download {url}: {exc}"
         print(message, file=common.ERR_HANDLE)
         raise RuntimeError(message) from exc
-    except (HTTPError, URLError) as exc:
+    except URLError as exc:
         message = f"Could not download {url}: {exc}"
         print(message, file=common.ERR_HANDLE)
         raise RuntimeError(message) from exc
@@ -417,11 +428,11 @@ def fetch_external(
             if is_youtube_unavailable_error(exc):
                 raise YouTubeUnavailableError(message) from exc
             raise RuntimeError(message) from exc
-    elif match := _GDRIVE_RE.search(url):
+    elif file_id := google_drive_id(url):
         try:
-            output = gdown_download(id=match.group(1), output=str(destination), quiet=True)
+            output = gdown_download(id=file_id, output=str(destination), quiet=True)
         except Exception as exc:
-            message = f"Could not download Google Drive file {match.group(1)}: {exc}"
+            message = f"Could not download Google Drive file {file_id}: {exc}"
             print(message, file=common.ERR_HANDLE)
             raise RuntimeError(message) from exc
         if output is None or not destination.exists():

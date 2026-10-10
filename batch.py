@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 import multiprocessing as mp
 import re
@@ -35,11 +35,17 @@ class BatchVideo:
     media_link: str
     entry_code: str | None = None
     song_id: int | None = None
+    original_link: str | None = None
 
     @property
     def name(self) -> str:
         suffix = f"-{self.entry_code}" if self.entry_code is not None else ""
         return f"ws{self.year}{self.cc}{suffix}"
+
+    @property
+    def label(self) -> str:
+        entry = f" entry {self.entry_code}" if self.entry_code is not None else ""
+        return f"{self.country} ({self.cc.upper()}) {self.year}{entry}"
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,13 @@ class BatchInput:
     videos: list[BatchVideo]
     skipped: list[str]
     missing_media_links: list[str]
+    malformed_media_links: list[str] = field(default_factory=list)
+
+
+@dataclass
+class BatchReport:
+    unavailable: list[str] = field(default_factory=list)
+    missing_artwork: list[str] = field(default_factory=list)
 
 
 def video_rows(path: Path) -> BatchInput:
@@ -96,6 +109,7 @@ def video_rows(path: Path) -> BatchInput:
     videos: list[BatchVideo] = []
     skipped: list[str] = []
     missing_media_links: list[str] = []
+    malformed_media_links: list[str] = []
     for index, row in enumerate(common.load_rows(path), start=1):
         if row["type"] != "v":
             skipped.append(f"row {index}: not a video")
@@ -114,10 +128,20 @@ def video_rows(path: Path) -> BatchInput:
         if not country:
             raise ValueError(f"row {index} ({year}/{cc}): country must not be empty")
 
+        entry_code = row.get("entry_code", "").strip() or None
+        entry = f" entry {entry_code}" if entry_code is not None else ""
+        label = f"{country} ({cc.upper()}) {year}{entry}"
         media_link = row.get("media_link", "").strip()
         if not media_link:
             skipped.append(f"row {index} ({year}/{cc}): no media_link")
-            missing_media_links.append(f"{country} {year}")
+            missing_media_links.append(label)
+            continue
+        try:
+            download.validate_media_url(media_link)
+        except ValueError as exc:
+            diagnostic = f"{label}: {media_link} ({exc})"
+            skipped.append(f"malformed media link for {diagnostic}")
+            malformed_media_links.append(diagnostic)
             continue
         if download.is_world_stage_url(media_link):
             skipped.append(f"row {index} ({year}/{cc}): already hosted on media.world-stage.org")
@@ -145,15 +169,16 @@ def video_rows(path: Path) -> BatchInput:
             title=row.get("title", "").strip(),
             language=language,
             media_link=media_link,
-            entry_code=row.get("entry_code", "").strip() or None,
+            entry_code=entry_code,
             song_id=song_id,
+            original_link=row.get("original_link", "").strip() or media_link,
         ))
 
     names = [video.name for video in videos]
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
         raise ValueError(f"Input has duplicate output names: {', '.join(duplicates)}")
-    return BatchInput(videos, skipped, missing_media_links)
+    return BatchInput(videos, skipped, missing_media_links, malformed_media_links)
 
 
 def configured_text(settings: dict[str, Any], key: str) -> str:
@@ -218,6 +243,28 @@ def _fetch_task_media(
     return None
 
 
+def _extract_artwork(task: BatchTask, source: Path, cover: Path, *, square: bool = False) -> None:
+    partial = _partial_output(cover)
+    try:
+        _worker_media(task).extract_cover(source, partial, square=square)
+        partial.replace(cover)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def _finish_audio(task: BatchTask, source: Path, cover: Path, detail: str) -> BatchResult:
+    destination = task.destination.with_suffix(".m4a")
+    partial_output = _partial_output(destination)
+    try:
+        _worker_media(task).make_audio(cover, source, partial_output, _media_tags(task.video))
+        partial_output.replace(destination)
+    finally:
+        partial_output.unlink(missing_ok=True)
+    if source != destination:
+        source.unlink()
+    return BatchResult(task.video, destination, "complete", detail, cover)
+
+
 def process_task(task: BatchTask) -> BatchResult:
     """Download, transcode if needed, and tag one independent batch video."""
     try:
@@ -228,33 +275,38 @@ def process_task(task: BatchTask) -> BatchResult:
     destination = task.destination
     if topic_upload is not None:
         destination = destination.with_suffix(".m4a")
-        cover = destination.with_suffix(topic_upload.thumbnail_suffix)
-        if (
+        cover = destination.with_suffix(".jpg")
+        existing_audio = (
             destination.exists()
             and not task.overwrite
             and _existing_media_is_valid(task, destination)
-        ):
-            if cover.exists():
-                return BatchResult(task.video, destination, "existing", "Topic audio already exists", cover)
-            download.download_direct(topic_upload.thumbnail_url, cover)
-            return BatchResult(task.video, destination, "complete", "existing Topic audio", cover)
+        )
+        if existing_audio and cover.exists():
+            return BatchResult(task.video, destination, "existing", "Topic audio already exists", cover)
+
+        thumbnail = task.raw_directory / f"{task.video.name}.thumbnail{topic_upload.thumbnail_suffix}"
+        download.download_direct(topic_upload.thumbnail_url, thumbnail)
+        _extract_artwork(task, thumbnail, cover, square=True)
+        thumbnail.unlink()
+        if existing_audio:
+            return _finish_audio(task, destination, cover, "existing Topic audio with restored artwork")
 
         raw_path = task.raw_directory / f"{task.video.name}.download.m4a"
-        download.download_direct(topic_upload.thumbnail_url, cover)
         if result := _fetch_task_media(
             task, destination, "a", raw_path,
             replace(task.downloader_settings, prefer_av1_opus=False),
         ):
             return result
 
-        partial_output = _partial_output(destination)
-        try:
-            _worker_media(task).make_audio(cover, raw_path, partial_output, _media_tags(task.video))
-            partial_output.replace(destination)
-        finally:
-            partial_output.unlink(missing_ok=True)
-        raw_path.unlink()
-        return BatchResult(task.video, destination, "complete", "YouTube Topic audio", cover)
+        return _finish_audio(task, raw_path, cover, "YouTube auto-generated audio")
+
+    audio_destination = destination.with_suffix(".m4a")
+    cover = destination.with_suffix(".jpg")
+    if (
+        audio_destination.exists() and cover.exists() and not task.overwrite
+        and _existing_media_is_valid(task, audio_destination)
+    ):
+        return BatchResult(task.video, audio_destination, "existing", "audio already exists", cover)
 
     if (
         destination.exists()
@@ -268,6 +320,16 @@ def process_task(task: BatchTask) -> BatchResult:
         task, destination, "v", raw_path, task.downloader_settings,
     ):
         return result
+
+    source_media = _worker_media(task).probe_media(raw_path)
+    if source_media.has_audio and not source_media.has_video:
+        if not source_media.has_picture:
+            return BatchResult(
+                task.video, audio_destination, "missing-artwork",
+                "Audio source has no embedded cover art; prepare its artwork manually",
+            )
+        _extract_artwork(task, raw_path, cover)
+        return _finish_audio(task, raw_path, cover, "audio with embedded artwork")
 
     partial_output = _partial_output(destination)
     try:
@@ -309,7 +371,7 @@ def download_one_batch(
     song_api_token: str | None,
     overwrite: bool,
     dry_run: bool,
-) -> list[str]:
+) -> BatchReport:
     if dry_run:
         for video in videos:
             destination = output_directory / f"{video.name}.mov"
@@ -322,7 +384,7 @@ def download_one_batch(
             print(f"[batch] Would tag {raw_path} -> {destination}")
             if s3_config is not None:
                 print(f"[batch] Would upload {destination} to s3://{s3_config.bucket}/{destination.name}")
-        return []
+        return BatchReport()
 
     raw_directory.mkdir(parents=True, exist_ok=True)
     tasks: list[BatchTask] = []
@@ -333,7 +395,7 @@ def download_one_batch(
             video, destination, raw_directory, downloader_settings, ffprobe, encoding, target_height, overwrite,
         ))
     if not tasks:
-        return []
+        return BatchReport()
 
     count = worker_count(jobs, len(tasks))
     print(f"[batch] Processing {len(tasks)} videos with {count} worker(s).")
@@ -384,6 +446,7 @@ def _update_song_links(result: BatchResult, token: str) -> None:
         video_link=song_api.media_url(result.destination.name),
         poster_link=song_api.media_url(result.artwork.name) if result.artwork is not None else None,
         entry_code=result.video.entry_code,
+        original_link=result.video.original_link or result.video.media_link,
     )
     print(f"[batch] Updated World Stage media links for {result.video.name}")
 
@@ -399,6 +462,9 @@ def _log_result(
 ) -> None:
     if result.status == "unavailable":
         print(f"[batch] Skipping unavailable YouTube video {result.video.name}: {result.detail}")
+        return
+    if result.status == "missing-artwork":
+        print(f"[batch] Skipping {result.video.label}: {result.detail}")
         return
     if result.status == "existing":
         print(f"[batch] Skipping existing {result.destination}")
@@ -426,22 +492,29 @@ def _consume_results(
     ffmpeg: str,
     ffprobe: str,
     overwrite: bool,
-) -> list[str]:
-    """Log completed tasks and collect the final unavailable-video report."""
-    unavailable: list[str] = []
+) -> BatchReport:
+    """Log completed tasks and collect sources needing manual attention."""
+    report = BatchReport()
     for result in results:
         _log_result(result, s3_config, s3_client, song_api_token, ffmpeg, ffprobe, overwrite)
         if result.status == "unavailable":
-            unavailable.append(f"{result.video.country} {result.video.year}")
-    return unavailable
+            report.unavailable.append(result.video.label)
+        elif result.status == "missing-artwork":
+            report.missing_artwork.append(f"{result.video.label}: {result.video.media_link}")
+    return report
 
 
-def print_report(unavailable: list[str], missing_media_links: list[str]) -> None:
+def print_report(
+    unavailable: list[str], missing_media_links: list[str],
+    malformed_media_links: Iterable[str] = (), missing_artwork: Iterable[str] = (),
+) -> None:
     """Print the final actionable report for sources the batch could not process."""
     print("[batch] Download report")
     for heading, videos in (
         ("Unavailable videos", unavailable),
         ("Videos without media links", missing_media_links),
+        ("Malformed media links", malformed_media_links),
+        ("Audio sources without embedded artwork", missing_artwork),
     ):
         print(f"[batch] {heading}:")
         if videos:
@@ -456,7 +529,9 @@ def download_videos(request: BatchDownloadRequest) -> None:
     for message in batch_input.skipped:
         print(f"[batch] Skipping {message}")
     if not batch_input.videos:
-        print_report([], batch_input.missing_media_links)
+        print_report([], batch_input.missing_media_links, batch_input.malformed_media_links)
+        if batch_input.malformed_media_links:
+            return
         raise ValueError("The input contains no downloadable video rows")
 
     request.output_directory.mkdir(parents=True, exist_ok=True)
@@ -497,7 +572,7 @@ def download_videos(request: BatchDownloadRequest) -> None:
     else:
         song_token = ""
     if request.temporary_directory is not None:
-        unavailable = download_one_batch(
+        report = download_one_batch(
             batch_input.videos, output_directory=request.output_directory, raw_directory=request.temporary_directory,
             downloader_settings=downloader_settings, ffprobe=ffprobe,
             encoding=encoding, jobs=request.jobs, target_height=request.target_height,
@@ -506,14 +581,17 @@ def download_videos(request: BatchDownloadRequest) -> None:
         )
     else:
         with tempfile.TemporaryDirectory(prefix="world-stage-batch-") as temporary_path:
-            unavailable = download_one_batch(
+            report = download_one_batch(
                 batch_input.videos, output_directory=request.output_directory, raw_directory=Path(temporary_path),
                 downloader_settings=downloader_settings, ffprobe=ffprobe,
                 encoding=encoding, jobs=request.jobs, target_height=request.target_height,
                 s3_config=s3_config, s3_client=s3_client, song_api_token=song_token or None,
                 overwrite=request.overwrite, dry_run=request.dry_run,
             )
-    print_report(unavailable, batch_input.missing_media_links)
+    print_report(
+        report.unavailable, batch_input.missing_media_links,
+        batch_input.malformed_media_links, report.missing_artwork,
+    )
 
 
 def setup_args() -> argparse.ArgumentParser:

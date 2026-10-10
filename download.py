@@ -21,7 +21,6 @@ import common
 RECAP_MEDIA_TYPES = {"v", "a"}
 WORLD_STAGE_HOST = "media.world-stage.org"
 HTTP_HEADERS = {"User-Agent": "World Stage recap maker"}
-_YT_RE = re.compile(r"(?:youtube\.com\/watch.*?[?&]v=|youtu\.be\/)([\w-]{11})")
 _GDRIVE_RE = re.compile(r"/d/([A-Za-z0-9_-]{10,})")
 
 
@@ -94,15 +93,54 @@ def is_youtube_unavailable_error(error: BaseException) -> bool:
 
 
 def youtube_id(url: str) -> str:
-    match = _YT_RE.search(url)
-    if not match:
+    """Parse a single video URL without accepting IDs inside a malformed URL."""
+    parsed = urlparse(url)
+    video_id = ""
+    if is_youtube_url(url) and parsed.scheme in {"http", "https"}:
+        if parsed.hostname in {"youtu.be", "www.youtu.be"}:
+            video_id = parsed.path.removeprefix("/").removesuffix("/")
+        elif parsed.path.rstrip("/") == "/watch":
+            values = parse_qs(parsed.query).get("v", [])
+            if len(values) == 1:
+                video_id = values[0]
+        else:
+            match = re.fullmatch(r"/(?:embed|shorts|live|v)/([A-Za-z0-9_-]{11})/?", parsed.path)
+            if match:
+                video_id = match.group(1)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
         raise ValueError(f"Cannot parse YouTube id from: {url}")
-    return match.group(1)
+    return video_id
 
 
 def is_youtube_url(url: str) -> bool:
     """Return whether a URL is handled by yt-dlp's YouTube extractor."""
-    return "youtu" in url.lower()
+    try:
+        host = urlparse(url).hostname or ""
+    except ValueError:
+        return False
+    return any(host == domain or host.endswith(f".{domain}") for domain in (
+        "youtube.com", "youtu.be", "youtube-nocookie.com",
+    ))
+
+
+def validate_media_url(url: str) -> None:
+    """Reject malformed links before a batch starts network downloads."""
+    parsed = urlparse(url)
+    if (
+        parsed.scheme not in {"http", "https"} or not parsed.hostname
+        or re.search(r"\s", url) or parsed.username is not None
+    ):
+        raise ValueError("Expected an HTTP(S) media URL without whitespace")
+    # Accessing port also validates invalid ports such as ':https:'.
+    _ = parsed.port
+    if is_youtube_url(url):
+        youtube_id(url)
+
+
+def _without_super_resolution(selector: str) -> str:
+    # Apply to the whole group so no fallback can select an AI upscale.
+    # '?' retains formats whose optional note is absent.
+    return f"({selector})[format_note!*=?AI-upscaled][format_id!*=?-sr]"
 
 
 def youtube_options(settings: DownloadSettings) -> dict[str, object]:
@@ -142,12 +180,12 @@ def youtube_video_format_selector(settings: DownloadSettings) -> str:
     limit = settings.maximum_video_height
     if limit is None:
         if settings.prefer_av1_opus:
-            return (
+            return _without_super_resolution(
                 "bv*[vcodec^=av01]+ba[acodec^=opus]/"
                 "bv*[vcodec^=av01]+ba/"
                 "bv*+ba[acodec^=opus]/bv*+ba/b"
             )
-        return "bv*+ba/b"
+        return _without_super_resolution("bv*+ba/b")
     if limit <= 0:
         raise ValueError("Maximum video height must be positive")
     at_or_below = f"[height<={limit}]"
@@ -157,7 +195,7 @@ def youtube_video_format_selector(settings: DownloadSettings) -> str:
         f"bv*[vcodec^=av01]{at_or_below}+ba/"
         f"bv*{at_or_below}+ba[acodec^=opus]/"
     ) if settings.prefer_av1_opus else ""
-    return (
+    return _without_super_resolution(
         f"{preferred}bv*{at_or_below}+ba/b{at_or_below}/"
         f"worstvideo{above}+bestaudio/worst{above}/bv*+ba/b"
     )
@@ -166,16 +204,15 @@ def youtube_video_format_selector(settings: DownloadSettings) -> str:
 def youtube_audio_format_selector(settings: DownloadSettings) -> str:
     """Prefer audio-only sources, falling back to audio from a muxed MP4."""
     if settings.prefer_av1_opus:
-        return "ba[acodec^=opus]/ba/b[ext=mp4]/b"
-    return "ba[ext=m4a]/ba/b[ext=mp4]/b"
+        return _without_super_resolution("ba[acodec^=opus]/ba/b[ext=mp4]/b")
+    return _without_super_resolution("ba[ext=m4a]/ba/b[ext=mp4]/b")
 
 
 def youtube_topic_upload(url: str, settings: DownloadSettings) -> YouTubeTopicUpload | None:
     """Return Topic-upload artwork metadata, or ``None`` for a normal video.
 
-    YouTube labels auto-generated music channels as ``Artist - Topic``.  These
-    uploads are audio releases, so the batch downloader stores them as M4A
-    together with yt-dlp's selected thumbnail instead of treating them as video.
+    Check the auto-generated description as well as the Topic channel suffix,
+    which remains useful when descriptions are absent or localized.
     """
     if not is_youtube_url(url):
         return None
@@ -192,10 +229,13 @@ def youtube_topic_upload(url: str, settings: DownloadSettings) -> YouTubeTopicUp
         raise RuntimeError(message) from exc
     if not isinstance(info, dict):
         raise TypeError(f"yt-dlp did not return metadata for {url}")
-    if not any(
+    description = info.get("description")
+    auto_generated = isinstance(description, str) and "auto-generated by youtube" in description.casefold()
+    topic_channel = any(
         isinstance(value, str) and value.strip().lower().endswith(" - topic")
         for value in (info.get("channel"), info.get("uploader"))
-    ):
+    )
+    if not (auto_generated or topic_channel):
         return None
     thumbnail_url = info.get("thumbnail")
     if not isinstance(thumbnail_url, str) or not thumbnail_url:

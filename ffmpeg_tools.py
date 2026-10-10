@@ -231,13 +231,23 @@ class FFmpeg:
         )
         return f",{base}:{values}:linear=true:print_format=summary"
 
+    def extract_cover(self, source: Path, output: Path, *, square: bool = False) -> None:
+        """Save a JPEG from a thumbnail or an audio file's embedded artwork."""
+        filters = ["-vf", "crop=min(iw\\,ih):min(iw\\,ih),setsar=1"] if square else []
+        self.run([
+            self.executable, "-y", "-hide_banner", "-i", str(source),
+            "-map", "0:v:0", "-frames:v", "1", *filters,
+            "-c:v", "mjpeg", "-q:v", "2", "-f", "image2", "-update", "1", str(output),
+        ])
+
     def make_audio(self, cover: Path, audio: Path, output: Path, tags: MediaTags) -> None:
+        # FFmpeg requires experimental muxing support to copy FLAC into MP4.
         self.run([
             self.executable, "-y", "-hide_banner", "-i", str(cover), "-i", str(audio),
             "-map", "0:v:0", "-map", "1:a:0", "-c:v", "mjpeg", "-c:a", "copy",
             "-disposition:v:0", "attached_pic", "-metadata:s:v:0", "title=Album cover",
             "-metadata:s:v:0", "comment=Cover (front)", *tags.arguments(),
-            "-movflags", "+faststart", "-f", "mp4", str(output),
+            "-strict", "-2", "-movflags", "+faststart", "-f", "mp4", str(output),
         ])
 
     def make_video(

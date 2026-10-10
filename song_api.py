@@ -41,6 +41,7 @@ def update_song_links(
     video_link: str,
     poster_link: str | None = None,
     entry_code: str | None = None,
+    original_link: str | None = None,
 ) -> None:
     """Set the public media links for one country/year entry through the song API."""
     if not token.strip():
@@ -60,6 +61,8 @@ def update_song_links(
     payload: dict[str, str] = {"video_link": video_link}
     if poster_link is not None:
         payload["poster_link"] = poster_link
+    if original_link is not None:
+        payload["original_link"] = original_link
     request = Request(
         f"{SONG_API_URL}/{song_id}",
         data=json.dumps(payload).encode("utf-8"),

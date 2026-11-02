@@ -101,6 +101,7 @@ schemes = {
     "MG": CS(name="Madagascar", bg="green", fg1="red", fg2="white", text="white"),
     "MY": CS(name="Malaysia", bg="blue", fg1="red", fg2="yellow", text="white"),
     "MV": CS(name="Maldives", bg="red", fg1="green", fg2="white", text="white"),
+    "ML": CS(name="Mali", bg="green", fg1="red", fg2="yellow", text="yellow"),
     "MT": CS(name="Malta", bg="red", fg1="white", fg2="white", text="white"),
     "MU": CS(name="Mauritius", bg="blue", fg1="red", fg2="green", text="yellow"),
     "MX": CS(name="Mexico", bg="green", fg1="white", fg2="red", text="brown"),

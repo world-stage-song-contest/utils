@@ -23,6 +23,7 @@ schemes = {
     "AU": CS(name="Australia", bg="blue", fg1="red", fg2="white", text="white"),
     "AT": CS(name="Austria", bg="white", fg1="red", fg2="red", text="red"),
     "AZ": CS(name="Azerbaijan", bg="cyan", fg1="green", fg2="red", text="red"),
+    "BB": CS(name="Barbados", bg="blue", fg1="yellow", fg2="black", text="yellow"),
     "BY": CS(name="Belarus", bg="white", fg1="red", fg2="red", text="red"),
     "BE": CS(name="Belgium", bg="red", fg1="yellow", fg2="black", text="black"),
     "BJ": CS(name="Benin", bg="green", fg1="yellow", fg2="red", text="yellow"),

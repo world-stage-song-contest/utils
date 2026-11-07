@@ -576,7 +576,16 @@ class PreparePanel(scrolled.ScrolledPanel):
 
         self.form.section(root, "Options")
         self.upload_check = self.form.checkbox(root, "Upload to configured S3", "upload", True)
-        self.subtitles_check = self.form.checkbox(root, "Include subtitles", "subtitles", False)
+        self.song_links_check = self.form.checkbox(root, "Update World Stage media links after upload", "update_song_links", False)
+        self.upload_check.Bind(wx.EVT_CHECKBOX, self.update_song_links_availability)
+        self.song_links_check.Bind(wx.EVT_CHECKBOX, self.update_song_links_availability)
+        self.subtitles_check = self.form.checkbox(root, "Include subtitles (upload with media)", "subtitles", False)
+        self.subtitles_row = self.form.file(
+            root, "Subtitles file (optional)", "subtitles_file", dialog_title="Choose subtitles",
+            wildcard="WebVTT subtitles (*.vtt)|*.vtt",
+        )
+        self.values["subtitles_file"].SetToolTip("Leave blank to use a .vtt file with the same name and directory as the source media.")
+        self.subtitles_check.Bind(wx.EVT_CHECKBOX, self.update_mode)
         self.form.checkbox(root, "Overwrite existing output files", "overwrite_existing", True)
         self.form.checkbox(root, "Clear upload cache before preparing", "clear_upload_cache", False)
 
@@ -606,13 +615,23 @@ class PreparePanel(scrolled.ScrolledPanel):
 
     def refresh_upload_availability(self) -> None:
         self.form.refresh_s3_upload(self.upload_check, "Configure S3 in Settings to enable uploads.")
+        self.update_song_links_availability()
+
+    def update_song_links_availability(self, _event=None) -> None:
+        token = str(app_config.recap_settings()["song_api_token"]).strip()
+        available = self.upload_check.GetValue() and bool(token)
+        if not available:
+            self.song_links_check.SetValue(False)
+        self.song_links_check.Enable(available)
+        self.song_links_check.SetToolTip(
+            "Finds the song from the filename's year, country and entry code, then updates links while preserving the original source link."
+            if available else "Enable S3 uploads and configure a World Stage song API token in Settings.",
+        )
 
     def update_mode(self, _event=None) -> None:
         is_audio = cast(wx.Choice, self.values["mode"]).GetStringSelection() == "audio"
         self.root_sizer.Show(self.cover_row, is_audio, recursive=True)
-        self.root_sizer.Show(self.subtitles_check, not is_audio, recursive=True)
-        if is_audio:
-            self.subtitles_check.SetValue(False)
+        self.root_sizer.Show(self.subtitles_row, self.subtitles_check.GetValue(), recursive=True)
         self.root_sizer.Layout()
         self.Layout()
         self.SetupScrolling(scroll_x=False, scroll_y=True, scrollToTop=False)

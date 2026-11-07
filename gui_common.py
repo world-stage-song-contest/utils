@@ -104,7 +104,7 @@ def run_gui_process(job: GuiWorkerJob, output_queue) -> None:
             raise TypeError("Prepare GUI jobs require PrepareRequest")
         request = cast(prepare.PrepareRequest, job.request)
         _run_gui_process(
-            output_queue, lambda: prepare.execute(request), use_common_handles=False,
+            output_queue, lambda: prepare.execute(request), use_common_handles=True,
             use_prepare_handles=True, redirect_standard_streams=False,
         )
         return
@@ -153,6 +153,11 @@ def build_prepare_request(values: Mapping[str, object]) -> prepare.PrepareReques
     mode = text("mode").lower()
     if mode not in {"audio", "video"}:
         raise ValueError("Mode must be audio or video")
+    update_song_links = bool(values.get("update_song_links", False))
+    if update_song_links:
+        if not bool(values["upload"]):
+            raise ValueError("Enable S3 uploads before updating World Stage media links")
+    subtitles_file = str(values.get("subtitles_file", "")).strip()
     settings = app_config.recap_settings()
     return prepare.PrepareRequest(
         mode=mode,
@@ -168,6 +173,8 @@ def build_prepare_request(values: Mapping[str, object]) -> prepare.PrepareReques
         clear_upload_cache=bool(values["clear_upload_cache"]),
         ffmpeg=str(settings["ffmpeg"]),
         ffprobe=str(settings["ffprobe"]),
+        subtitles_file=Path(subtitles_file) if values["subtitles"] and subtitles_file else None,
+        update_song_links=update_song_links,
     )
 
 

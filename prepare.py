@@ -20,6 +20,7 @@ import app_cache
 import app_config
 import country_schemes
 import ffmpeg_tools
+import song_api
 
 base_url = 'https://media.world-stage.org'
 OUT_HANDLE = sys.stdout
@@ -64,6 +65,9 @@ class PrepareRequest:
     clear_upload_cache: bool = False
     dry_run_mode: bool = False
     quiet_mode: bool = False
+    subtitles_file: Path | None = None
+    update_song_links: bool = False
+    song_id: int | None = None
 
 
 def save_s3_config(config: S3Config) -> Path:
@@ -101,6 +105,7 @@ class SongData:
     title: str
     language: str
     subtitles: bool
+    subtitles_file: Path | None = None
 
     def __post_init__(self):
         if not re.fullmatch(r"[a-z]{3}", self.language):
@@ -110,6 +115,11 @@ class SongData:
             raise FileNotFoundError(self.audio_path)
         if (p := self.image_path()) is not None and not p.exists():
             raise FileNotFoundError(self.image_path())
+        if (p := self.subtitles_path()) is not None:
+            if p.suffix.lower() != ".vtt":
+                raise ValueError("Subtitles must be a WebVTT (.vtt) file")
+            if not p.is_file():
+                raise FileNotFoundError(p)
 
         # must look like wsYYYYcc.* or wsYYYYcc-<entry code>.*
         pattern = re.compile(
@@ -144,7 +154,7 @@ class SongData:
         if not self.subtitles:
             return None
 
-        return self.audio_path.with_suffix('.vtt')
+        return self.subtitles_file or self.audio_path.with_suffix('.vtt')
 
     def base_name(self) -> str:
         return self.audio_path.stem
@@ -164,7 +174,7 @@ class SongData:
         if not sp:
             return ''
 
-        return sp.name
+        return f"{self.base_name()}.vtt"
 
     def year_cc(self) -> tuple[str, str]:
         return self._year, self._cc
@@ -248,6 +258,9 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--upload", "-u", dest="upload", action="store_true", help="Upload the files (default)")
     parser.add_argument("--no-upload", "-U", dest="upload", action="store_false", help="Do not upload the files")
     parser.add_argument("--subtitles", "-s", action="store_true", help="Add a subtitle track. Must be in the same directory as the video file and have a .vtt extension")
+    parser.add_argument("--subtitles-file", type=Path, help="Include and upload this WebVTT file instead of the matching .vtt sidecar")
+    parser.add_argument("--update-song-links", action="store_true", help="Update World Stage links after uploading; find the song from the filename's year, country and entry code")
+    parser.add_argument("--song-id", type=int, help="Optional song ID override instead of automatic filename lookup")
     parser.add_argument("--clear-upload-cache", action="store_true", help="Forget cached upload records before processing")
 
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -443,6 +456,8 @@ def upload(path: Path | None, config: S3Config, client, object_name: str | None 
         extra_args['ContentType'] = 'image/webp'
     elif suffix == '.json':
         extra_args['ContentType'] = 'application/json'
+    elif suffix == '.vtt':
+        extra_args['ContentType'] = 'text/vtt'
 
     print(f"Uploading {path} to s3://{config.bucket}/{object_name}", file=OUT_HANDLE)
     if dry_run.get():
@@ -469,6 +484,38 @@ def execute(request: PrepareRequest) -> None:
     dry_run.set(request.dry_run_mode)
     overwrite.set(request.overwrite_existing)
 
+    song_token = ""
+    if request.update_song_links:
+        if not request.upload or not s3_configured():
+            raise RuntimeError("World Stage link updates require configured S3 uploads")
+        song_token = str(app_config.recap_settings()["song_api_token"]).strip()
+        if not song_token:
+            raise ValueError("Configure a World Stage song API token before updating media links")
+        if request.song_id is not None and request.song_id <= 0:
+            raise ValueError("World Stage song ID must be positive")
+
+    img_type = f'.{request.image_type.lstrip(".")}' if request.mode == "audio" and request.image_type else None
+    if request.mode == "audio" and img_type is None:
+        raise ValueError("Audio preparation requires an image type, such as jpg or png")
+
+    song = SongData(audio_path=request.media_file,
+                    image_type=img_type,
+                    output_directory=request.output_directory,
+                    artist=request.artist,
+                    title=request.title,
+                    language=request.language.lower(),
+                    subtitles=request.subtitles or request.subtitles_file is not None,
+                    subtitles_file=request.subtitles_file)
+
+    song_id = request.song_id
+    if request.update_song_links and song_id is None:
+        if request.dry_run_mode:
+            qprint(f"Would find the World Stage song ID from {song.base_name()}")
+        else:
+            year, cc = song.year_cc()
+            song_id = song_api.find_song_id(song_token, year=year, country=cc, entry_code=song.entry_code())
+            print(f"Found World Stage song {song_id} for {song.base_name()}", file=OUT_HANDLE)
+
     if request.clear_upload_cache:
         if request.dry_run_mode:
             qprint(f"Would clear upload records in {app_cache.database_path()}")
@@ -482,18 +529,6 @@ def execute(request: PrepareRequest) -> None:
     except S3NotConfigured:
         qprint("S3 is not configured; continuing without uploads.")
         upload_session = None
-
-    img_type = f'.{request.image_type.lstrip(".")}' if request.mode == "audio" and request.image_type else None
-    if request.mode == "audio" and img_type is None:
-        raise ValueError("Audio preparation requires an image type, such as jpg or png")
-
-    song = SongData(audio_path=request.media_file,
-                    image_type=img_type,
-                    output_directory=request.output_directory,
-                    artist=request.artist,
-                    title=request.title,
-                    language=request.language.lower(),
-                    subtitles=request.subtitles)
 
     song.output_path().parent.mkdir(parents=True, exist_ok=True)
 
@@ -513,7 +548,20 @@ def execute(request: PrepareRequest) -> None:
         upload(media_path, upload_session.config, upload_session.client)
         upload(json_path, upload_session.config, upload_session.client)
         upload(song.image_path(), upload_session.config, upload_session.client)
-        upload(song.subtitles_path(), upload_session.config, upload_session.client)
+        upload(song.subtitles_path(), upload_session.config, upload_session.client,
+               object_name=song.subtitles_name() or None)
+        if request.update_song_links:
+            if request.dry_run_mode:
+                qprint(f"Would update World Stage media links for {song.base_name()}, preserving its original link")
+            else:
+                year, cc = song.year_cc()
+                song_api.update_song_links(
+                    song_token, song_id=song_id, year=year, country=cc,
+                    entry_code=song.entry_code(), video_link=song_api.media_url(media_path.name),
+                    poster_link=song_api.media_url(song.image_name()) if song.image_path() else None,
+                    vtt_link=song_api.media_url(song.subtitles_name()) if song.subtitles else None,
+                )
+                print(f"Updated World Stage media links for song {song_id}", file=OUT_HANDLE)
 
 
 def main() -> None:
@@ -541,6 +589,9 @@ def main() -> None:
         clear_upload_cache=args.clear_upload_cache,
         dry_run_mode=args.dry_run,
         quiet_mode=args.quiet,
+        subtitles_file=args.subtitles_file,
+        update_song_links=args.update_song_links,
+        song_id=args.song_id,
     )
     try:
         execute(request)

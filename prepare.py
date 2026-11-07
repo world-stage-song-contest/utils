@@ -433,12 +433,27 @@ def open_upload_session(enabled: bool, *, dry_run_mode: bool = False) -> UploadS
     return UploadSession(config, create_s3_client(config))
 
 
+def remote_object_matches(client, bucket: str, object_name: str, size: int) -> bool:
+    """Confirm a cached upload still exists in the bucket with the expected size."""
+    if client is None:
+        return False
+    try:
+        head = client.head_object(Bucket=bucket, Key=object_name)
+    except (BotoCoreError, ClientError):
+        return False
+    return head.get("ContentLength") == size
+
+
 def upload(path: Path | None, config: S3Config, client, object_name: str | None = None) -> None:
     if path is None:
         return
     object_name = object_name or path.name
 
-    if not dry_run.get() and app_cache.is_cached_upload(path, config.endpoint_url, config.bucket, object_name):
+    if (
+        not dry_run.get()
+        and app_cache.is_cached_upload(path, config.endpoint_url, config.bucket, object_name)
+        and remote_object_matches(client, config.bucket, object_name, path.stat().st_size)
+    ):
         print(f"Skipping unchanged upload: {path}", file=OUT_HANDLE)
         return
 

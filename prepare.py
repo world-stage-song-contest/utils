@@ -259,7 +259,7 @@ def setup_args() -> argparse.ArgumentParser:
     parser.add_argument("--no-upload", "-U", dest="upload", action="store_false", help="Do not upload the files")
     parser.add_argument("--subtitles", "-s", action="store_true", help="Add a subtitle track. Must be in the same directory as the video file and have a .vtt extension")
     parser.add_argument("--subtitles-file", type=Path, help="Include and upload this WebVTT file instead of the matching .vtt sidecar")
-    parser.add_argument("--update-song-links", action="store_true", help="Update World Stage links after uploading; find the song from the filename's year, country and entry code")
+    parser.add_argument("--update-song-links", "-l", action="store_true", help="Update World Stage links after uploading; find the song from the filename's year, country and entry code")
     parser.add_argument("--song-id", type=int, help="Optional song ID override instead of automatic filename lookup")
     parser.add_argument("--clear-upload-cache", action="store_true", help="Forget cached upload records before processing")
 
